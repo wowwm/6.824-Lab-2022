@@ -6,7 +6,6 @@ import "os"
 import "net/rpc"
 import "net/http"
 
-
 type Coordinator struct {
 	// Your definitions here.
 
@@ -14,20 +13,18 @@ type Coordinator struct {
 
 // Your code here -- RPC handlers for the worker to call.
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
+// Example
+// 一个 RPC 处理器的示例
+// the RPC 参数 and reply 在 rpc.go 中定义.
+// 绑定 Coordinator 的方法
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
 	return nil
 }
 
-
 //
-// start a thread that listens for RPCs from worker.go
-//
+// 开启一个线程监听 RPCs from worker.go
+// 绑定 Coordinator 的方法
 func (c *Coordinator) server() {
 	rpc.Register(c)
 	rpc.HandleHTTP()
@@ -41,29 +38,27 @@ func (c *Coordinator) server() {
 	go http.Serve(l, nil)
 }
 
-//
-// main/mrcoordinator.go calls Done() periodically to find out
-// if the entire job has finished.
-//
+// Done
+// main/mrcoordinator.go 定期调用 Done() to find out
+// 如果全部的工作完成后
+// 绑定 Coordinator 的方法
 func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
 
-
 	return ret
 }
 
-//
-// create a Coordinator.
-// main/mrcoordinator.go calls this function.
-// nReduce is the number of reduce tasks to use.
+// MakeCoordinator
+// 创建一个 Coordinator.
+// main/mrcoordinator.go 调用这个函数.
+// nReduce 是 reduce 任务数
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	// Your code here.
-
 
 	c.server()
 	return &c

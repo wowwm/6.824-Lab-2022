@@ -5,17 +5,16 @@ import "log"
 import "net/rpc"
 import "hash/fnv"
 
-
-//
+// KeyValue
 // Map functions return a slice of KeyValue.
-//
+// wc.go 中使用了这个 struct
 type KeyValue struct {
 	Key   string
 	Value string
 }
 
 //
-// use ihash(key) % NReduce to choose the reduce
+// use ihash(key) % NReduce to 选择一个 Reduce
 // task number for each KeyValue emitted by Map.
 //
 func ihash(key string) int {
@@ -24,9 +23,8 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-
-//
-// main/mrworker.go calls this function.
+// Worker
+// main/mrworker.go 调用这个函数
 //
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
@@ -38,10 +36,10 @@ func Worker(mapf func(string, string) []KeyValue,
 
 }
 
+// CallExample
+// 示例函数 对 coordinator 进行一次 RPC 调用.
 //
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
+// the RPC 参数 在 rpc.go 中定义.
 //
 func CallExample() {
 
@@ -54,10 +52,8 @@ func CallExample() {
 	// declare a reply structure.
 	reply := ExampleReply{}
 
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
+	// 发送 RPC request, 等待 reply.
+	// the "Coordinator.Example" 告诉接受服务器 想要调用 struct Coordinator 的 Example() 方法
 	ok := call("Coordinator.Example", &args, &reply)
 	if ok {
 		// reply.Y should be 100.
@@ -68,7 +64,7 @@ func CallExample() {
 }
 
 //
-// send an RPC request to the coordinator, wait for the response.
+// 发送一个 RPC request 给 coordinator, 等待回应.
 // usually returns true.
 // returns false if something goes wrong.
 //

@@ -3,15 +3,14 @@ package mr
 //
 // RPC definitions.
 //
-// remember to capitalize all names.
+// 记住所有名称需要首字母大写。
 //
 
 import "os"
 import "strconv"
 
 //
-// example to show how to declare the arguments
-// and reply for an RPC.
+// 声明参数和应答RPC的例子
 //
 
 type ExampleArgs struct {
@@ -24,8 +23,7 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
-
-// Cook up a unique-ish UNIX-domain socket name
+// 制作一个唯一的 UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since
 // Athena AFS doesn't support UNIX-domain sockets.
