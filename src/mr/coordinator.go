@@ -39,8 +39,8 @@ func (c *Coordinator) server() {
 }
 
 // Done
-// main/mrcoordinator.go 定期调用 Done() to find out
-// 如果全部的工作完成后
+// main/mrcoordinator.go 定期调用 Done() 判断任务是否结束
+// 如果全部的工作完成后应该返回 true
 // 绑定 Coordinator 的方法
 func (c *Coordinator) Done() bool {
 	ret := false

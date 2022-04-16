@@ -14,7 +14,7 @@ type KeyValue struct {
 }
 
 //
-// use ihash(key) % NReduce to 选择一个 Reduce
+// use ihash(key) % NReduce to 用哈希选择一个 Reduce
 // task number for each KeyValue emitted by Map.
 //
 func ihash(key string) int {
@@ -65,8 +65,8 @@ func CallExample() {
 
 //
 // 发送一个 RPC request 给 coordinator, 等待回应.
-// usually returns true.
-// returns false if something goes wrong.
+// 通常返回 true.
+// 发生错误返回 false
 //
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
