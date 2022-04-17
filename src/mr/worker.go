@@ -71,7 +71,7 @@ func CallExample() {
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
-	c, err := rpc.DialHTTP("unix", sockname)
+	c, err := rpc.DialHTTP("unix", sockname) // 客户端连接服务端
 	if err != nil {
 		log.Fatal("dialing:", err)
 	}
