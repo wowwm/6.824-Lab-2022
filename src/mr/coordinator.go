@@ -1,6 +1,8 @@
 package mr
 
-import "log"
+import (
+	"log"
+)
 import "net"
 import "os"
 import "net/rpc"
@@ -8,10 +10,20 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-
+	files         []string // 未完成的待 Map 文件名切片
+	uncommitFiles []string // 未提交的待 Map 文件名切片
+	nReduce       int      // Reducer 数量
 }
 
 // Your code here -- RPC handlers for the worker to call.
+
+// WorkerArgsReply RPC 暴露方法，获取所有 Worker 参数
+func (c *Coordinator) WorkerArgsReply(args int, workerArgs *WorkerReply) error {
+	workerArgs.UncommitFiles = c.uncommitFiles
+	workerArgs.NReduce = c.nReduce
+	c.uncommitFiles = []string{} // 提交文件给 woker 后清空未提交切片
+	return nil
+}
 
 // Example
 // 一个 RPC 处理器的示例
@@ -22,7 +34,6 @@ func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
-//
 // 开启一个线程监听 RPCs from worker.go
 // 绑定 Coordinator 的方法
 func (c *Coordinator) server() {
@@ -55,10 +66,11 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go 调用这个函数.
 // files 为所有待 Map 文件名的切片
 // nReduce 是 reduce 任务数
-//
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
-
+	c.files = files
+	c.uncommitFiles = files
+	c.nReduce = nReduce
 	// Your code here.
 
 	c.server()

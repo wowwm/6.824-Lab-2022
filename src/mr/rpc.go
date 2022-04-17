@@ -23,6 +23,11 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+type WorkerReply struct {
+	UncommitFiles []string // 未提交的待 Map 文件名切片
+	NReduce       int      // Reducer 数量
+}
+
 // 制作一个唯一的 UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since
