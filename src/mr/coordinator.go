@@ -21,6 +21,7 @@ type Coordinator struct {
 func (c *Coordinator) WorkerArgsReply(args int, workerArgs *WorkerReply) error {
 	workerArgs.UncommitFiles = c.uncommitFiles
 	workerArgs.NReduce = c.nReduce
+	workerArgs.NMap = len(c.files)
 	c.uncommitFiles = []string{} // 提交文件给 woker 后清空未提交切片
 	return nil
 }

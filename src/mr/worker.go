@@ -41,6 +41,7 @@ func ihash(key string) int {
 }
 
 func MapWorker(mapf func(string, string) []KeyValue, MapNum int, fileName string, nReduce int) {
+	fmt.Println("----- start map -----")
 	file, err := os.Open(fileName)
 	if err != nil {
 		log.Fatalf("cannot open %v", fileName)
@@ -59,8 +60,7 @@ func MapWorker(mapf func(string, string) []KeyValue, MapNum int, fileName string
 		enc := json.NewEncoder(ofile)
 		for _, kv := range kva {
 			if ihash(kv.Key)%10 == i {
-				fmt.Println(ihash(kv.Key) % 10)
-				err := enc.Encode(kv)
+				err := enc.Encode(&kv)
 				if err != nil {
 					fmt.Println("encode failed! ", err.Error())
 				}
@@ -69,8 +69,45 @@ func MapWorker(mapf func(string, string) []KeyValue, MapNum int, fileName string
 	}
 }
 
-func ReduceWorker(reducef func(string, []string) string) {
-
+func ReduceWorker(reducef func(string, []string) string, ReduceNum int, rdFiles []string) {
+	fmt.Println("----- Reduce start -----")
+	var kva []KeyValue
+	for _, fileName := range rdFiles {
+		ofile, err := os.Open(fileName)
+		if err != nil {
+			log.Fatalf("cannot open %v", fileName)
+		}
+		dec := json.NewDecoder(ofile)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		ofile.Close()
+		os.Remove(fileName)
+	}
+	sort.Sort(ByKey(kva)) // 排序
+	fmt.Println("ReduceTask len: ", len(kva))
+	outfile, _ := os.Create("mr-out-" + strconv.Itoa(ReduceNum))
+	i := 0
+	for i < len(kva) { // 对每一个中间文件值循环
+		j := i + 1
+		// 对第 i 之后的所有 Key 与第 i 相等的中间文件，由于已经经过排序，所以 j 即为同一个 key 的数量
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+		values := []string{}
+		for k := i; k < j; k++ { // 从 i 到 j 每个的 Value 放入切片
+			values = append(values, kva[k].Value)
+		}
+		output := reducef(kva[i].Key, values) // 调用 reduce 函数，每次一个 key
+		// 一行一行地写入文件
+		fmt.Fprintf(outfile, "%v %v\n", kva[i].Key, output)
+		i = j
+	}
+	outfile.Close()
 }
 
 // Worker
@@ -88,11 +125,17 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 					go MapWorker(mapf, MapNum, fileName, nReduce) // MapNum 为文件编号也为任务编号
 				}
 			}
-			for i := 0; i < nMap; i++ {
-
+		} else { //Map 结束，开始 Reduce
+			time.Sleep(time.Second * 5)
+			for i := 0; i < nReduce; i++ {
+				var rdFiles []string // 每一个 Reduce 任务的文件名切片
+				for j := 0; j < workerArgs.NMap; j++ {
+					filename := "mr-" + strconv.Itoa(j) + strconv.Itoa(i)
+					rdFiles = append(rdFiles, filename)
+				}
+				fmt.Println(rdFiles)
+				go ReduceWorker(reducef, i, rdFiles)
 			}
-		} else {
-			go ReduceWorker(reducef)
 		}
 		time.Sleep(time.Second * 5)
 	}

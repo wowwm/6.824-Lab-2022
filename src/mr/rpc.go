@@ -25,6 +25,7 @@ type ExampleReply struct {
 
 type WorkerReply struct {
 	UncommitFiles []string // 未提交的待 Map 文件名切片
+	NMap          int      // Mapper 数量
 	NReduce       int      // Reducer 数量
 }
 
