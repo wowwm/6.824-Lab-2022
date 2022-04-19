@@ -20,7 +20,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Usage: mrcoordinator inputfiles...\n")
 		os.Exit(1)
 	}
-	// 启用 Coordinator，传入命令行参数，第一个为所有待Map文件名的切片，nReduce 是 Reduce 任务数量
+	// 启用 Coordinator，传入命令行参数，第一个为所有待 Map 文件名的切片，nReduce 是 Reduce 任务数量
 	m := mr.MakeCoordinator(os.Args[1:], 10)
 	for m.Done() == false {
 		time.Sleep(time.Second)
