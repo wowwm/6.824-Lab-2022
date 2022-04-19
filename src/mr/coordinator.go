@@ -22,6 +22,7 @@ type Coordinator struct {
 	mapChan    chan MapJob
 	reduceChan chan ReduceJob
 	finishFlag chan bool
+	Fin        int
 	lock       locker
 }
 
@@ -65,8 +66,15 @@ func (c *Coordinator) makeReduceJobs() {
 // Your code here -- RPC handlers for the worker to call.
 
 // WorkerArgsReply RPC 暴露方法，获取所有 Worker 参数
-func (c *Coordinator) WorkerArgsReply(fin int, workerArgs *WorkerReply) error {
-	if len(c.mapChan) > 0 { // Map 未完成
+func (c *Coordinator) WorkerArgsReply(Fin int, workerArgs *WorkerReply) error {
+	c.lock.mapl.Lock()
+	c.lock.reducel.Lock()
+	Fin = c.Fin
+	workerArgs.Fin = Fin
+	c.lock.reducel.Unlock()
+	c.lock.mapl.Unlock()
+	if Fin == 0 { // Map
+		//fmt.Println("gei Map ----------")
 		workerArgs.MapJob = <-c.mapChan
 		workerArgs.NReduce = c.nReduce
 		go func() {
@@ -77,10 +85,13 @@ func (c *Coordinator) WorkerArgsReply(fin int, workerArgs *WorkerReply) error {
 			for _, job := range c.mapJobs {
 				if workerArgs.MapJob.MapID == job.MapID {
 					c.mapChan <- job
+					fmt.Println("MapDown ", job.MapID)
 				}
 			}
 		}()
-	} else if len(c.reduceChan) > 0 { // Reduce 未完成
+		//time.Sleep(time.Second * 10)
+	} else if Fin == 1 { // Reduce
+		//fmt.Println("gei Reduce ----------")
 		workerArgs.ReduceJob = <-c.reduceChan
 		go func() {
 			//后台跑一个监控超时，超时就重新加入 channel
@@ -90,29 +101,22 @@ func (c *Coordinator) WorkerArgsReply(fin int, workerArgs *WorkerReply) error {
 			for _, job := range c.reduceJobs {
 				if workerArgs.ReduceJob.ReduceID == job.ReduceID {
 					c.reduceChan <- job
+					fmt.Println("ReduceDown ", job.ReduceID)
 				}
 			}
 		}()
+		//time.Sleep(time.Second * 10)
 	} else {
+		//time.Sleep(time.Second * 10)
+		//c.lock.mapl.Lock()
+		//c.lock.reducel.Lock()
+		//defer c.lock.mapl.Unlock()
+		//defer c.lock.reducel.Unlock()
+		//if len(c.mapJobs) == 0 && len(c.reduceJobs) == 0 {
 		c.finishFlag <- true
-		fmt.Println("---------- all finish ----------")
+		//fmt.Println("---------- all finish ----------")
+		//}
 	}
-
-	//workerArgs.FinishFlag = fflag
-	////fmt.Println("111 workerArgs get: ", workerArgs)
-	//if workerArgs.FinishFlag == 0 { // Map 未完成
-	//	workerArgs.NMap = len(c.mapJobs)
-	//	workerArgs.NReduce = c.nReduce
-	//	workerArgs.MapJobs = c.mapJobs
-	//	//fmt.Println("workerArgs: ", workerArgs)
-	//
-	//} else if workerArgs.FinishFlag == 1 { // Map 完成，Reduce 未完成
-	//	//fmt.Println("Map 结束！！！！！")
-	//	workerArgs.ReduceJobs = c.reduceJobs
-	//} else { // MapReduce 完成
-	//	fmt.Println("--------- all down 退出 coordinator ---------")
-	//	c.finishFlag <- true
-	//}
 
 	return nil
 }
@@ -129,6 +133,11 @@ func (c *Coordinator) MapJobOK(mapjob MapJob, reply *string) error {
 		}
 	}
 	c.mapJobs = jobs
+	// Map 完成
+	if len(jobs) == 0 && len(c.mapChan) == 0 {
+		fmt.Println(" map fininsh -----")
+		c.Fin = 1
+	}
 	//fmt.Println("-- del mapjob: ", mapjob.MapID)
 	return nil
 }
@@ -145,6 +154,11 @@ func (c *Coordinator) ReduceJobOK(reducejob ReduceJob, reply *string) error {
 		}
 	}
 	c.reduceJobs = jobs
+	// Reduce 完成
+	if len(jobs) == 0 && len(c.reduceChan) == 0 {
+		fmt.Println("reduce fininsh -----")
+		c.Fin = 2
+	}
 	//fmt.Println("-- after del reduceJobs: ", c.reduceJobs)
 	return nil
 }
@@ -170,6 +184,7 @@ func (c *Coordinator) server() {
 // 绑定 Coordinator 的方法
 func (c *Coordinator) Done() bool {
 	//fmt.Println("done!!!!!")
+
 	if <-c.finishFlag {
 		fmt.Println("-------- exit coordinator --------")
 		return true

@@ -93,7 +93,7 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 	for _, fileName := range reducejob.ReduceName {
 		ofile, err := os.Open(fileName)
 		if err != nil {
-			log.Fatalf("cannot open %v", fileName)
+			fmt.Println("cannot open %v", fileName, " ", err)
 		}
 		dec := json.NewDecoder(ofile)
 		for {
@@ -104,7 +104,7 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 			kva = append(kva, kv)
 		}
 		ofile.Close()
-		os.Remove(fileName) // 移除打开过文件
+		//os.Remove(fileName) // 移除打开过文件
 	}
 	sort.Sort(ByKey(kva)) // 排序
 	//fmt.Println("ReduceTask len: ", len(kva))
@@ -147,62 +147,25 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 // main/mrworker.go 调用这个函数
 // 传入 map reduce 两个函数
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	//fflag := 0 // 任务进度标记
+	//fflag := 0 // 任务完成标记
 	for {
 		workerArgs := &WorkerReply{} // 传指针
 		//workerArgs.FinishFlag = fflag
 		CallWorkerArgsReply(workerArgs)
+		//fmt.Println("Fin:---------", workerArgs.Fin)
 		lock := sync.Mutex{} // 锁
-		if workerArgs.MapJob.MapName != "" {
+		if workerArgs.Fin == 0 {
+			//fmt.Println("MapID:", workerArgs.MapJob.MapID)
 			MapWorker(mapf, workerArgs.MapJob, workerArgs.NReduce, &lock)
-		} else if len(workerArgs.ReduceJob.ReduceName) > 0 {
+		} else if workerArgs.Fin == 1 {
+			//fmt.Println("ReduceID:", workerArgs.ReduceJob.ReduceID)
 			ReduceWorker(reducef, workerArgs.ReduceJob, &lock)
 		} else {
-			fmt.Println("----------all finish ----------")
-			CallWorkerArgsReply(workerArgs)
+			//time.Sleep(time.Second * 10)
+			//if fflag != 0 {
+			fmt.Println("---------- exit worker ----------")
 			break
 		}
-
-		//fmt.Println(workerArgs)
-		//nReduce := workerArgs.NReduce
-		//
-		//if workerArgs.FinishFlag == 0 { // Map 任务未完成
-		//	mapJobs := workerArgs.MapJobs
-		//	var wg sync.WaitGroup  // WaitGroup
-		//	lock := sync.Mutex{}   // 锁
-		//	mapNum := len(mapJobs) // 剩余Map任务数,传入指针
-		//	wg.Add(mapNum)
-		//	for _, mapjob := range mapJobs {
-		//		go MapWorker(mapf, mapjob, nReduce, &mapNum, &wg, &lock)
-		//	}
-		//	wg.Wait()
-		//	if mapNum == 0 {
-		//		fflag = 1
-		//		fmt.Println("Map 结束 =========", workerArgs.FinishFlag)
-		//	}
-		//} else if workerArgs.FinishFlag == 1 {
-		//	fmt.Println("Map ok ----------  Reduce start")
-		//	reduceJobs := workerArgs.ReduceJobs
-		//	var wg sync.WaitGroup        // WaitGroup
-		//	lock := sync.Mutex{}         // 锁
-		//	reduceNum := len(reduceJobs) // 剩余 Reduce 任务数,传入指针
-		//	wg.Add(reduceNum)
-		//	for _, reducejob := range reduceJobs {
-		//		go ReduceWorker(reducef, reducejob, &reduceNum, &wg, &lock)
-		//	}
-		//	wg.Wait()
-		//	if reduceNum == 0 {
-		//		fflag = 2
-		//		fmt.Println("Reduce 结束 =========", workerArgs.FinishFlag)
-		//	}
-		//} else if workerArgs.FinishFlag == 2 { // 已完成 mapReduce
-		//	fmt.Println("--------- all down ---------")
-		//	fflag = 3
-		//} else if workerArgs.FinishFlag == 3 {
-		//	fmt.Println("-------- 退出 worker --------")
-		//	break
-		//}
-		//time.Sleep(time.Second)
 	}
 }
 
@@ -234,11 +197,17 @@ func CallReduceJobOK(reducejob ReduceJob) {
 func CallWorkerArgsReply(workerArgs *WorkerReply) *WorkerReply {
 	//fflag := workerArgs.FinishFlag // 此次的 FinishFlag 作为参数传给 coordinator
 	ok := call("Coordinator.WorkerArgsReply", 0, workerArgs)
+	//defer func() { // 使用 recover
+	//	err := recover()
+	//	if err != nil {
+	//		//fmt.Println(err)
+	//	}
+	//}()
 	if ok {
 		//fmt.Println("--- success! WorkerArgsReply: ")
 		return workerArgs
 	} else {
-		fmt.Printf("CallWorkerArgsReply failed!\n")
+		//fmt.Printf("CallWorkerArgsReply failed!\n")
 		return workerArgs
 	}
 }
