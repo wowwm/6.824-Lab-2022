@@ -6,7 +6,9 @@ package mr
 // 记住所有名称需要首字母大写。
 //
 
-import "os"
+import (
+	"os"
+)
 import "strconv"
 
 //
@@ -26,6 +28,7 @@ type ExampleReply struct {
 type MapJob struct {
 	MapName string
 	MapID   int
+	//stime   time.Ticker
 }
 
 type ReduceJob struct {
@@ -34,14 +37,11 @@ type ReduceJob struct {
 }
 
 type WorkerReply struct {
-	MapJobs    []MapJob
-	ReduceJobs []ReduceJob
-	//Mapchan    chan MapJob
-	//ReduceChan chan ReduceJob
-	//UncommitFiles []string // 未提交的待 Map 文件名切片
-	NMap       int // Mapper 数量
-	NReduce    int // Reducer 数量
-	FinishFlag int // 1为完成了Map，2为完成了Reduce
+	MapJob    MapJob
+	ReduceJob ReduceJob
+	//NMap       int // Mapper 数量
+	NReduce int // Reducer 数量
+	//FinishFlag int // 1为完成了Map，2为完成了Reduce
 }
 
 // 制作一个唯一的 UNIX-domain socket name

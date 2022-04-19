@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 	"sync"
-	"time"
 )
 import "log"
 import "net/rpc"
@@ -33,8 +32,6 @@ func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }    // 交换 a[i]
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key } // 判断 key 大小
 
 // use ihash(key) % NReduce to 用哈希选择一个 Reduce
-// task number for each KeyValue emitted by Map.
-//
 func ihash(key string) int {
 	h := fnv.New32a()
 	h.Write([]byte(key))
@@ -42,8 +39,8 @@ func ihash(key string) int {
 }
 
 func MapWorker(mapf func(string, string) []KeyValue, mapjob MapJob, nReduce int,
-	mapNum *int, wg *sync.WaitGroup, lock *sync.Mutex) {
-	defer wg.Done()
+	lock *sync.Mutex) {
+	//defer wg.Done()
 	//fmt.Println("----- start map -----")
 	file, err := os.Open(mapjob.MapName)
 	if err != nil {
@@ -82,15 +79,15 @@ func MapWorker(mapf func(string, string) []KeyValue, mapjob MapJob, nReduce int,
 			fmt.Println("tmpfile rename erro ", iname)
 		}
 	}
-	lock.Lock()
-	*mapNum--            // 一次循环减一
+	//lock.Lock()
+	//*mapNum--            // 一次循环减一
 	CallMapJobOK(mapjob) // 通知完成了此次 MapJob
-	lock.Unlock()
+	//lock.Unlock()
 }
 
 func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
-	reduceNum *int, wg *sync.WaitGroup, lock *sync.Mutex) {
-	defer wg.Done()
+	lock *sync.Mutex) {
+	//defer wg.Done()
 	//fmt.Println("----- Reduce start -----")
 	var kva []KeyValue
 	for _, fileName := range reducejob.ReduceName {
@@ -140,65 +137,73 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 	if err2 != nil {
 		fmt.Println("tmpfile rename erro ", iname)
 	}
-	lock.Lock()
-	*reduceNum--               // 一次循环减一
+	//lock.Lock()
+	//*reduceNum--               // 一次循环减一
 	CallReduceJobOK(reducejob) // 通知完成了此次 reducejob
-	lock.Unlock()
+	//lock.Unlock()
 }
 
 // Worker
 // main/mrworker.go 调用这个函数
 // 传入 map reduce 两个函数
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	fflag := 0 // 任务进度标记
+	//fflag := 0 // 任务进度标记
 	for {
 		workerArgs := &WorkerReply{} // 传指针
-		workerArgs.FinishFlag = fflag
+		//workerArgs.FinishFlag = fflag
 		CallWorkerArgsReply(workerArgs)
-		//fmt.Println(workerArgs)
-		nReduce := workerArgs.NReduce
-
-		if workerArgs.FinishFlag == 0 { // Map 任务未完成
-			mapJobs := workerArgs.MapJobs
-			var wg sync.WaitGroup  // WaitGroup
-			lock := sync.Mutex{}   // 锁
-			mapNum := len(mapJobs) // 剩余Map任务数,传入指针
-			wg.Add(mapNum)
-			for _, mapjob := range mapJobs {
-				go MapWorker(mapf, mapjob, nReduce, &mapNum, &wg, &lock)
-			}
-			wg.Wait()
-			if mapNum == 0 {
-				fflag = 1
-				fmt.Println("Map 结束 =========", workerArgs.FinishFlag)
-			}
-		} else if workerArgs.FinishFlag == 1 {
-			fmt.Println("Map ok ----------  Reduce start")
-			reduceJobs := workerArgs.ReduceJobs
-			var wg sync.WaitGroup        // WaitGroup
-			lock := sync.Mutex{}         // 锁
-			reduceNum := len(reduceJobs) // 剩余 Reduce 任务数,传入指针
-			wg.Add(reduceNum)
-			for _, reducejob := range reduceJobs {
-				go ReduceWorker(reducef, reducejob, &reduceNum, &wg, &lock)
-			}
-			wg.Wait()
-			if reduceNum == 0 {
-				fflag = 2
-				fmt.Println("Reduce 结束 =========", workerArgs.FinishFlag)
-			}
-		} else if workerArgs.FinishFlag == 2 { // 已完成 mapReduce
-			fmt.Println("--------- all down ---------")
-			fflag = 3
-		} else if workerArgs.FinishFlag == 3 {
-			fmt.Println("-------- 退出 worker --------")
+		lock := sync.Mutex{} // 锁
+		if workerArgs.MapJob.MapName != "" {
+			MapWorker(mapf, workerArgs.MapJob, workerArgs.NReduce, &lock)
+		} else if len(workerArgs.ReduceJob.ReduceName) > 0 {
+			ReduceWorker(reducef, workerArgs.ReduceJob, &lock)
+		} else {
+			fmt.Println("----------all finish ----------")
+			CallWorkerArgsReply(workerArgs)
 			break
 		}
-		time.Sleep(time.Second)
+
+		//fmt.Println(workerArgs)
+		//nReduce := workerArgs.NReduce
+		//
+		//if workerArgs.FinishFlag == 0 { // Map 任务未完成
+		//	mapJobs := workerArgs.MapJobs
+		//	var wg sync.WaitGroup  // WaitGroup
+		//	lock := sync.Mutex{}   // 锁
+		//	mapNum := len(mapJobs) // 剩余Map任务数,传入指针
+		//	wg.Add(mapNum)
+		//	for _, mapjob := range mapJobs {
+		//		go MapWorker(mapf, mapjob, nReduce, &mapNum, &wg, &lock)
+		//	}
+		//	wg.Wait()
+		//	if mapNum == 0 {
+		//		fflag = 1
+		//		fmt.Println("Map 结束 =========", workerArgs.FinishFlag)
+		//	}
+		//} else if workerArgs.FinishFlag == 1 {
+		//	fmt.Println("Map ok ----------  Reduce start")
+		//	reduceJobs := workerArgs.ReduceJobs
+		//	var wg sync.WaitGroup        // WaitGroup
+		//	lock := sync.Mutex{}         // 锁
+		//	reduceNum := len(reduceJobs) // 剩余 Reduce 任务数,传入指针
+		//	wg.Add(reduceNum)
+		//	for _, reducejob := range reduceJobs {
+		//		go ReduceWorker(reducef, reducejob, &reduceNum, &wg, &lock)
+		//	}
+		//	wg.Wait()
+		//	if reduceNum == 0 {
+		//		fflag = 2
+		//		fmt.Println("Reduce 结束 =========", workerArgs.FinishFlag)
+		//	}
+		//} else if workerArgs.FinishFlag == 2 { // 已完成 mapReduce
+		//	fmt.Println("--------- all down ---------")
+		//	fflag = 3
+		//} else if workerArgs.FinishFlag == 3 {
+		//	fmt.Println("-------- 退出 worker --------")
+		//	break
+		//}
+		//time.Sleep(time.Second)
 	}
-	// Your worker implementation here.
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
 }
 
 // CallMapJobOK RPC 通知某一个 Map 任务已经完成
@@ -227,43 +232,20 @@ func CallReduceJobOK(reducejob ReduceJob) {
 
 // CallWorkerArgsReply  RPC 向协调器获取 Worker 所需参数
 func CallWorkerArgsReply(workerArgs *WorkerReply) *WorkerReply {
-	fflag := workerArgs.FinishFlag // 此次的 FinishFlag 作为参数传给 coordinator
-	ok := call("Coordinator.WorkerArgsReply", fflag, workerArgs)
+	//fflag := workerArgs.FinishFlag // 此次的 FinishFlag 作为参数传给 coordinator
+	ok := call("Coordinator.WorkerArgsReply", 0, workerArgs)
 	if ok {
 		//fmt.Println("--- success! WorkerArgsReply: ")
 		return workerArgs
 	} else {
 		fmt.Printf("CallWorkerArgsReply failed!\n")
-		panic("CallWorkerArgsReply failed!")
+		return workerArgs
 	}
 }
 
-// CallExample
-// 示例函数 对 coordinator 进行一次 RPC 调用.
-// the RPC 参数 在 rpc.go 中定义.
-func CallExample() {
-	// declare an argument structure.
-	args := ExampleArgs{}
-	// fill in the argument(s).
-	args.X = 99
-	// declare a reply structure.
-	reply := ExampleReply{}
-	// 发送 RPC request, 等待 reply.
-	// the "Coordinator.Example" 告诉接受服务器 想要调用 struct Coordinator 的 Example() 方法
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok { // 返回true
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
-}
-
-//
 // 发送一个 RPC request 给 coordinator, 等待回应.
 // 通常返回 true.
 // 发生错误返回 false
-//
 func call(rpcname string, args interface{}, reply interface{}) bool {
 	// c, err := rpc.DialHTTP("tcp", "127.0.0.1"+":1234")
 	sockname := coordinatorSock()
