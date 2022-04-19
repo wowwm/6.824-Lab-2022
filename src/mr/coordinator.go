@@ -1,7 +1,10 @@
 package mr
 
 import (
+	"fmt"
 	"log"
+	"strconv"
+	"sync"
 )
 import "net"
 import "os"
@@ -10,19 +13,103 @@ import "net/http"
 
 type Coordinator struct {
 	// Your definitions here.
-	files         []string // 未完成的待 Map 文件名切片
-	uncommitFiles []string // 未提交的待 Map 文件名切片
-	nReduce       int      // Reducer 数量
+	files      []string // 未完成的待 Map 文件名切片
+	mapJobs    []MapJob
+	reduceJobs []ReduceJob
+	nMap       int
+	nReduce    int // Reducer 数量
+	finishFlag chan bool
+	lock       locker
+}
+
+type locker struct {
+	mapl    *sync.Mutex
+	reducel *sync.Mutex
+}
+
+// 制作 MapJobs
+func (c *Coordinator) makeMapJobs(files []string) []MapJob {
+	var mapJobs []MapJob
+	for num, filename := range files {
+		mapJob := MapJob{
+			filename,
+			num,
+		}
+		mapJobs = append(mapJobs, mapJob)
+	}
+	return mapJobs
+}
+
+// 制作 ReduceJobs
+func (c *Coordinator) makeReduceJobs() []ReduceJob {
+	var rdJobs []ReduceJob
+	for i := 0; i < c.nReduce; i++ {
+		var rdNmaes ReduceJob // 一个 Reduce Job
+		var rdFiles []string  // 每一个 Reduce 任务的文件名切片
+		for j := 0; j < c.nMap; j++ {
+			filename := "mr-" + strconv.Itoa(j) + strconv.Itoa(i)
+			rdFiles = append(rdFiles, filename)
+		}
+		rdNmaes.ReduceID = i
+		rdNmaes.ReduceName = rdFiles
+		rdJobs = append(rdJobs, rdNmaes)
+	}
+	//fmt.Println("rdjobs: ", rdJobs)
+	return rdJobs
 }
 
 // Your code here -- RPC handlers for the worker to call.
 
 // WorkerArgsReply RPC 暴露方法，获取所有 Worker 参数
-func (c *Coordinator) WorkerArgsReply(args int, workerArgs *WorkerReply) error {
-	workerArgs.UncommitFiles = c.uncommitFiles
-	workerArgs.NReduce = c.nReduce
-	workerArgs.NMap = len(c.files)
-	c.uncommitFiles = []string{} // 提交文件给 woker 后清空未提交切片
+func (c *Coordinator) WorkerArgsReply(fflag int, workerArgs *WorkerReply) error {
+	workerArgs.FinishFlag = fflag
+	//fmt.Println("111 workerArgs get: ", workerArgs)
+	if workerArgs.FinishFlag == 0 { // Map 未完成
+		workerArgs.NMap = len(c.mapJobs)
+		workerArgs.NReduce = c.nReduce
+		workerArgs.MapJobs = c.mapJobs
+		//fmt.Println("workerArgs: ", workerArgs)
+
+	} else if workerArgs.FinishFlag == 1 { // Map 完成，Reduce 未完成
+		//fmt.Println("Map 结束！！！！！")
+		workerArgs.ReduceJobs = c.reduceJobs
+	} else { // MapReduce 完成
+		fmt.Println("--------- all down 退出 coordinator ---------")
+		c.finishFlag <- true
+	}
+
+	return nil
+}
+
+// MapJobOK 处理 mapjob 完成后的通知
+func (c *Coordinator) MapJobOK(mapjob MapJob, reply *string) error {
+	var jobs []MapJob
+	c.lock.mapl.Lock()
+	defer c.lock.mapl.Unlock()
+	// 在 c.mapJobs 去除已经完成的 job
+	for _, job := range c.mapJobs {
+		if job.MapID != mapjob.MapID {
+			jobs = append(jobs, job)
+		}
+	}
+	c.mapJobs = jobs
+	fmt.Println("-- del mapjob: ", mapjob.MapID)
+	return nil
+}
+
+// ReduceJobOK 处理 ReduceJob 完成后的通知
+func (c *Coordinator) ReduceJobOK(reducejob ReduceJob, reply *string) error {
+	c.lock.reducel.Lock()
+	defer c.lock.reducel.Unlock()
+	var jobs []ReduceJob
+	// 在 c.reduceJobs 去除已经完成的 job
+	for _, job := range c.reduceJobs {
+		if job.ReduceID != reducejob.ReduceID {
+			jobs = append(jobs, job)
+		}
+	}
+	c.reduceJobs = jobs
+	//fmt.Println("-- after del reduceJobs: ", c.reduceJobs)
 	return nil
 }
 
@@ -55,11 +142,11 @@ func (c *Coordinator) server() {
 // 如果全部的工作完成后应该返回 true
 // 绑定 Coordinator 的方法
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	if <-c.finishFlag {
+		return true
+	}
+	c.finishFlag <- false
+	return false
 }
 
 // MakeCoordinator
@@ -70,9 +157,17 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	c.files = files
-	c.uncommitFiles = files
+	c.nMap = len(files)
 	c.nReduce = nReduce
-	// Your code here.
+	c.mapJobs = c.makeMapJobs(files) // 转为 MapJobs 类型
+	c.reduceJobs = c.makeReduceJobs()
+	c.finishFlag = make(chan bool, 2)
+	c.finishFlag <- false
+	c.lock.mapl = new(sync.Mutex)
+	c.lock.reducel = new(sync.Mutex)
+	//// 初始化 channel
+	//c.workerArgs.Mapchan = make(chan MapJob, c.nMap)
+	//c.workerArgs.ReduceChan = make(chan ReduceJob, c.nReduce)
 
 	c.server()
 	return &c

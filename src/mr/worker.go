@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 )
 import "log"
@@ -40,24 +41,30 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
-func MapWorker(mapf func(string, string) []KeyValue, MapNum int, fileName string, nReduce int) {
-	fmt.Println("----- start map -----")
-	file, err := os.Open(fileName)
+func MapWorker(mapf func(string, string) []KeyValue, mapjob MapJob, nReduce int,
+	mapNum *int, wg *sync.WaitGroup, lock *sync.Mutex) {
+	defer wg.Done()
+	//fmt.Println("----- start map -----")
+	file, err := os.Open(mapjob.MapName)
 	if err != nil {
-		log.Fatalf("cannot open %v", fileName)
+		log.Fatalf("cannot open %v", mapjob.MapName)
 	}
 	content, err := ioutil.ReadAll(file) // 读取文件，后期尝试下用 ReadFile
 	if err != nil {
-		log.Fatalf("cannot read %v", fileName)
+		log.Fatalf("cannot read %v", mapjob.MapName)
 	}
 	file.Close()
-	kva := mapf(fileName, string(content))
+	lock.Lock()
+	kva := mapf(mapjob.MapName, string(content))
+	lock.Unlock()
 	sort.Sort(ByKey(kva)) // 排序
+	// 输出到中间文件
 	for i := 0; i < nReduce; i++ {
-		iname := "mr-" + strconv.Itoa(MapNum) + strconv.Itoa(i)
-		fmt.Println(iname)
-		ofile, _ := os.Create(iname)
-		enc := json.NewEncoder(ofile)
+		iname := "mr-" + strconv.Itoa(mapjob.MapID) + strconv.Itoa(i)
+		//fmt.Println(iname)
+		tmpfile, _ := ioutil.TempFile("./", "tmpmr-")
+		//ofile, _ := os.Create(iname)
+		enc := json.NewEncoder(tmpfile)
 		for _, kv := range kva {
 			if ihash(kv.Key)%10 == i {
 				err := enc.Encode(&kv)
@@ -66,13 +73,27 @@ func MapWorker(mapf func(string, string) []KeyValue, MapNum int, fileName string
 				}
 			}
 		}
+		err := tmpfile.Close()
+		if err != nil {
+			fmt.Println("tmpfile close err")
+		}
+		err2 := os.Rename(tmpfile.Name(), "./"+iname)
+		if err2 != nil {
+			fmt.Println("tmpfile rename erro ", iname)
+		}
 	}
+	lock.Lock()
+	*mapNum--            // 一次循环减一
+	CallMapJobOK(mapjob) // 通知完成了此次 MapJob
+	lock.Unlock()
 }
 
-func ReduceWorker(reducef func(string, []string) string, ReduceNum int, rdFiles []string) {
-	fmt.Println("----- Reduce start -----")
+func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
+	reduceNum *int, wg *sync.WaitGroup, lock *sync.Mutex) {
+	defer wg.Done()
+	//fmt.Println("----- Reduce start -----")
 	var kva []KeyValue
-	for _, fileName := range rdFiles {
+	for _, fileName := range reducejob.ReduceName {
 		ofile, err := os.Open(fileName)
 		if err != nil {
 			log.Fatalf("cannot open %v", fileName)
@@ -86,11 +107,13 @@ func ReduceWorker(reducef func(string, []string) string, ReduceNum int, rdFiles 
 			kva = append(kva, kv)
 		}
 		ofile.Close()
-		os.Remove(fileName)
+		os.Remove(fileName) // 移除打开过文件
 	}
 	sort.Sort(ByKey(kva)) // 排序
-	fmt.Println("ReduceTask len: ", len(kva))
-	outfile, _ := os.Create("mr-out-" + strconv.Itoa(ReduceNum))
+	//fmt.Println("ReduceTask len: ", len(kva))
+	iname := "mr-out-" + strconv.Itoa(reducejob.ReduceID)
+	tmpfile, _ := ioutil.TempFile("./", "tmpmr-")
+	//outfile, _ := os.Create(iname)
 	i := 0
 	for i < len(kva) { // 对每一个中间文件值循环
 		j := i + 1
@@ -102,56 +125,112 @@ func ReduceWorker(reducef func(string, []string) string, ReduceNum int, rdFiles 
 		for k := i; k < j; k++ { // 从 i 到 j 每个的 Value 放入切片
 			values = append(values, kva[k].Value)
 		}
+		lock.Lock()
 		output := reducef(kva[i].Key, values) // 调用 reduce 函数，每次一个 key
+		lock.Unlock()
 		// 一行一行地写入文件
-		fmt.Fprintf(outfile, "%v %v\n", kva[i].Key, output)
+		fmt.Fprintf(tmpfile, "%v %v\n", kva[i].Key, output)
 		i = j
 	}
-	outfile.Close()
+	err := tmpfile.Close()
+	if err != nil {
+		fmt.Println("tmpfile close err")
+	}
+	err2 := os.Rename(tmpfile.Name(), "./"+iname)
+	if err2 != nil {
+		fmt.Println("tmpfile rename erro ", iname)
+	}
+	lock.Lock()
+	*reduceNum--               // 一次循环减一
+	CallReduceJobOK(reducejob) // 通知完成了此次 reducejob
+	lock.Unlock()
 }
 
 // Worker
 // main/mrworker.go 调用这个函数
 // 传入 map reduce 两个函数
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
+	fflag := 0 // 任务进度标记
 	for {
-		workerArgs := CallWorkerArgsReply()
-		nMap := len(workerArgs.UncommitFiles)
+		workerArgs := &WorkerReply{} // 传指针
+		workerArgs.FinishFlag = fflag
+		CallWorkerArgsReply(workerArgs)
+		//fmt.Println(workerArgs)
 		nReduce := workerArgs.NReduce
-		//fmt.Println("get workerArgs success!  ", nMap)
-		if nMap > 0 { // Map 任务未结束
-			for MapNum, fileName := range workerArgs.UncommitFiles {
-				if fileName != "" { // 文件名非空（空说明已经完成了）
-					go MapWorker(mapf, MapNum, fileName, nReduce) // MapNum 为文件编号也为任务编号
-				}
+
+		if workerArgs.FinishFlag == 0 { // Map 任务未完成
+			mapJobs := workerArgs.MapJobs
+			var wg sync.WaitGroup  // WaitGroup
+			lock := sync.Mutex{}   // 锁
+			mapNum := len(mapJobs) // 剩余Map任务数,传入指针
+			wg.Add(mapNum)
+			for _, mapjob := range mapJobs {
+				go MapWorker(mapf, mapjob, nReduce, &mapNum, &wg, &lock)
 			}
-		} else { //Map 结束，开始 Reduce
-			time.Sleep(time.Second * 5)
-			for i := 0; i < nReduce; i++ {
-				var rdFiles []string // 每一个 Reduce 任务的文件名切片
-				for j := 0; j < workerArgs.NMap; j++ {
-					filename := "mr-" + strconv.Itoa(j) + strconv.Itoa(i)
-					rdFiles = append(rdFiles, filename)
-				}
-				fmt.Println(rdFiles)
-				go ReduceWorker(reducef, i, rdFiles)
+			wg.Wait()
+			if mapNum == 0 {
+				fflag = 1
+				fmt.Println("Map 结束 =========", workerArgs.FinishFlag)
 			}
+		} else if workerArgs.FinishFlag == 1 {
+			fmt.Println("Map ok ----------  Reduce start")
+			reduceJobs := workerArgs.ReduceJobs
+			var wg sync.WaitGroup        // WaitGroup
+			lock := sync.Mutex{}         // 锁
+			reduceNum := len(reduceJobs) // 剩余 Reduce 任务数,传入指针
+			wg.Add(reduceNum)
+			for _, reducejob := range reduceJobs {
+				go ReduceWorker(reducef, reducejob, &reduceNum, &wg, &lock)
+			}
+			wg.Wait()
+			if reduceNum == 0 {
+				fflag = 2
+				fmt.Println("Reduce 结束 =========", workerArgs.FinishFlag)
+			}
+		} else if workerArgs.FinishFlag == 2 { // 已完成 mapReduce
+			fmt.Println("--------- all down ---------")
+			fflag = 3
+		} else if workerArgs.FinishFlag == 3 {
+			fmt.Println("-------- 退出 worker --------")
+			break
 		}
-		time.Sleep(time.Second * 5)
+		time.Sleep(time.Second)
 	}
-
 	// Your worker implementation here.
-
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 }
 
-// CallWorkerArgsReply  RPC 向协调器获取所需参数
-func CallWorkerArgsReply() *WorkerReply {
-	workerArgs := &WorkerReply{} // 传指针
-	ok := call("Coordinator.WorkerArgsReply", 0, workerArgs)
+// CallMapJobOK RPC 通知某一个 Map 任务已经完成
+func CallMapJobOK(mapjob MapJob) {
+	reply := ""
+	ok := call("Coordinator.MapJobOK", mapjob, &reply)
 	if ok {
-		fmt.Println("--- success! WorkerArgsReply: ", workerArgs)
+		//fmt.Println("---== success! CallMapJobOK")
+	} else {
+		fmt.Printf("MapJobOK failed!\n")
+		panic("MapJobOK failed!")
+	}
+}
+
+// CallReduceJobOK RPC 通知某一个 Reduce 任务已经完成
+func CallReduceJobOK(reducejob ReduceJob) {
+	reply := ""
+	ok := call("Coordinator.ReduceJobOK", reducejob, &reply)
+	if ok {
+		//fmt.Println("---== success! CallReduceJobOK")
+	} else {
+		fmt.Printf("CallReduceJobOK failed!\n")
+		panic("CallReduceJobOK failed!")
+	}
+}
+
+// CallWorkerArgsReply  RPC 向协调器获取 Worker 所需参数
+func CallWorkerArgsReply(workerArgs *WorkerReply) *WorkerReply {
+	fflag := workerArgs.FinishFlag // 此次的 FinishFlag 作为参数传给 coordinator
+	ok := call("Coordinator.WorkerArgsReply", fflag, workerArgs)
+	if ok {
+		//fmt.Println("--- success! WorkerArgsReply: ")
 		return workerArgs
 	} else {
 		fmt.Printf("CallWorkerArgsReply failed!\n")
