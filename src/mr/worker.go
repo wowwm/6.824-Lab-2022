@@ -140,6 +140,7 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 	//lock.Lock()
 	//*reduceNum--               // 一次循环减一
 	CallReduceJobOK(reducejob) // 通知完成了此次 reducejob
+	//fmt.Println("reduce finish ---- ", reducejob.ReduceID)
 	//lock.Unlock()
 }
 
@@ -147,25 +148,39 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 // main/mrworker.go 调用这个函数
 // 传入 map reduce 两个函数
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
-	//fflag := 0 // 任务完成标记
 	for {
 		workerArgs := &WorkerReply{} // 传指针
-		//workerArgs.FinishFlag = fflag
-		CallWorkerArgsReply(workerArgs)
+		//timeChannel := time.After(5 * time.Second) //计时器
+		ok := CallWorkerArgsReply(workerArgs)
 		//fmt.Println("Fin:---------", workerArgs.Fin)
+		if !ok { // call失败
+			fmt.Println("---------- exit worker ---------- call fail")
+			break
+		}
+		//if workerArgs.Fin == 0 {
+		//	fmt.Println(workerArgs)
+		//}
 		lock := sync.Mutex{} // 锁
-		if workerArgs.Fin == 0 {
+		if workerArgs.MapJob.MapName != "" {
 			//fmt.Println("MapID:", workerArgs.MapJob.MapID)
 			MapWorker(mapf, workerArgs.MapJob, workerArgs.NReduce, &lock)
 		} else if workerArgs.Fin == 1 {
 			//fmt.Println("ReduceID:", workerArgs.ReduceJob.ReduceID)
 			ReduceWorker(reducef, workerArgs.ReduceJob, &lock)
 		} else {
-			//time.Sleep(time.Second * 10)
-			//if fflag != 0 {
 			fmt.Println("---------- exit worker ----------")
 			break
 		}
+		// 超时break，但是可能会导致无worker可用
+		//select {
+		//case <-timeChannel:
+		//	fmt.Println("timeout")
+		//	timeoutSign = 1
+		//default:
+		//}
+		//if timeoutSign == 1 {
+		//	break
+		//}
 	}
 }
 
@@ -194,21 +209,17 @@ func CallReduceJobOK(reducejob ReduceJob) {
 }
 
 // CallWorkerArgsReply  RPC 向协调器获取 Worker 所需参数
-func CallWorkerArgsReply(workerArgs *WorkerReply) *WorkerReply {
+func CallWorkerArgsReply(workerArgs *WorkerReply) bool {
 	//fflag := workerArgs.FinishFlag // 此次的 FinishFlag 作为参数传给 coordinator
 	ok := call("Coordinator.WorkerArgsReply", 0, workerArgs)
-	//defer func() { // 使用 recover
-	//	err := recover()
-	//	if err != nil {
-	//		//fmt.Println(err)
-	//	}
-	//}()
+
 	if ok {
-		//fmt.Println("--- success! WorkerArgsReply: ")
-		return workerArgs
+		//fmt.Printf("-------- Call success!\n")
+
+		return true
 	} else {
 		//fmt.Printf("CallWorkerArgsReply failed!\n")
-		return workerArgs
+		return false
 	}
 }
 
@@ -229,6 +240,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
+	//fmt.Println(err)
 	return false
 }

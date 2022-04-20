@@ -41,7 +41,7 @@ type WorkerReply struct {
 	ReduceJob ReduceJob
 	//NMap       int // Mapper 数量
 	NReduce int // Reducer 数量
-	Fin     int // 1为完成了Map，2为完成了Reduce
+	Fin     int // 1为初始值，2为完成了Map，3为完成了Reduce
 }
 
 // 制作一个唯一的 UNIX-domain socket name

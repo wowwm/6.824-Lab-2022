@@ -67,22 +67,24 @@ func (c *Coordinator) makeReduceJobs() {
 
 // WorkerArgsReply RPC 暴露方法，获取所有 Worker 参数
 func (c *Coordinator) WorkerArgsReply(Fin int, workerArgs *WorkerReply) error {
+	//fmt.Println("call reply ==================")
 	c.lock.mapl.Lock()
 	c.lock.reducel.Lock()
 	Fin = c.Fin
-	workerArgs.Fin = Fin
 	c.lock.reducel.Unlock()
 	c.lock.mapl.Unlock()
+	workerArgs.Fin = Fin
 	if Fin == 0 { // Map
-		//fmt.Println("gei Map ----------")
 		workerArgs.MapJob = <-c.mapChan
 		workerArgs.NReduce = c.nReduce
+		//fmt.Println("gei Map ----------", workerArgs.MapJob.MapID)
 		go func() {
 			//后台跑一个监控超时，超时就重新加入 channel
 			time.Sleep(time.Second * 10)
 			c.lock.mapl.Lock()
-			defer c.lock.mapl.Unlock()
-			for _, job := range c.mapJobs {
+			jobs := c.mapJobs[:] // 拷贝切片
+			c.lock.mapl.Unlock()
+			for _, job := range jobs {
 				if workerArgs.MapJob.MapID == job.MapID {
 					c.mapChan <- job
 					fmt.Println("MapDown ", job.MapID)
@@ -91,31 +93,29 @@ func (c *Coordinator) WorkerArgsReply(Fin int, workerArgs *WorkerReply) error {
 		}()
 		//time.Sleep(time.Second * 10)
 	} else if Fin == 1 { // Reduce
-		//fmt.Println("gei Reduce ----------")
 		workerArgs.ReduceJob = <-c.reduceChan
+		//fmt.Println("gei Reduce ----------", workerArgs.ReduceJob.ReduceID)
 		go func() {
 			//后台跑一个监控超时，超时就重新加入 channel
 			time.Sleep(time.Second * 10)
 			c.lock.reducel.Lock()
-			defer c.lock.reducel.Unlock()
-			for _, job := range c.reduceJobs {
+			jobs := c.reduceJobs[:] // 拷贝切片
+			c.lock.reducel.Unlock()
+			for _, job := range jobs {
 				if workerArgs.ReduceJob.ReduceID == job.ReduceID {
 					c.reduceChan <- job
 					fmt.Println("ReduceDown ", job.ReduceID)
 				}
 			}
 		}()
-		//time.Sleep(time.Second * 10)
-	} else {
-		//time.Sleep(time.Second * 10)
-		//c.lock.mapl.Lock()
-		//c.lock.reducel.Lock()
-		//defer c.lock.mapl.Unlock()
-		//defer c.lock.reducel.Unlock()
-		//if len(c.mapJobs) == 0 && len(c.reduceJobs) == 0 {
+	} else if Fin == 2 {
+		//time.Sleep(time.Second * 5)
+		//fmt.Println("call last ==========")
+		//c.Fin++
 		c.finishFlag <- true
-		//fmt.Println("---------- all finish ----------")
-		//}
+		// 让 Worker 正常退出后再退出 Coordinator
+		//workerArgs.Fin = 2
+		//Fin++
 	}
 
 	return nil
@@ -137,6 +137,7 @@ func (c *Coordinator) MapJobOK(mapjob MapJob, reply *string) error {
 	if len(jobs) == 0 && len(c.mapChan) == 0 {
 		fmt.Println(" map fininsh -----")
 		c.Fin = 1
+		//time.Sleep(time.Second)
 	}
 	//fmt.Println("-- del mapjob: ", mapjob.MapID)
 	return nil
@@ -158,6 +159,7 @@ func (c *Coordinator) ReduceJobOK(reducejob ReduceJob, reply *string) error {
 	if len(jobs) == 0 && len(c.reduceChan) == 0 {
 		fmt.Println("reduce fininsh -----")
 		c.Fin = 2
+		//c.finishFlag <- true
 	}
 	//fmt.Println("-- after del reduceJobs: ", c.reduceJobs)
 	return nil
@@ -202,6 +204,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	c.nMap = len(files)
 	c.nReduce = nReduce
+	c.Fin = 0
 	// 将所有任务做成任务类，放入 channel
 	c.makeMapJobs(files)
 	c.makeReduceJobs()
@@ -215,5 +218,14 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c.lock.workerl = new(sync.Mutex)
 
 	c.server()
+
+	// 监控结束
+	//go func() {
+	//	for c.Fin < 2 {
+	//		time.Sleep(time.Second)
+	//	}
+	//	c.finishFlag <- true
+	//}()
+
 	return &c
 }
