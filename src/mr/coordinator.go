@@ -117,7 +117,6 @@ func (c *Coordinator) WorkerArgsReply(Fin int, workerArgs *WorkerReply) error {
 		//workerArgs.Fin = 2
 		//Fin++
 	}
-
 	return nil
 }
 

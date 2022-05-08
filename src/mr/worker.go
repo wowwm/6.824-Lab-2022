@@ -40,7 +40,6 @@ func ihash(key string) int {
 
 func MapWorker(mapf func(string, string) []KeyValue, mapjob MapJob, nReduce int,
 	lock *sync.Mutex) {
-	//defer wg.Done()
 	//fmt.Println("----- start map -----")
 	file, err := os.Open(mapjob.MapName)
 	if err != nil {
@@ -79,10 +78,7 @@ func MapWorker(mapf func(string, string) []KeyValue, mapjob MapJob, nReduce int,
 			fmt.Println("tmpfile rename erro ", iname)
 		}
 	}
-	//lock.Lock()
-	//*mapNum--            // 一次循环减一
 	CallMapJobOK(mapjob) // 通知完成了此次 MapJob
-	//lock.Unlock()
 }
 
 func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
@@ -137,11 +133,7 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 	if err2 != nil {
 		fmt.Println("tmpfile rename erro ", iname)
 	}
-	//lock.Lock()
-	//*reduceNum--               // 一次循环减一
 	CallReduceJobOK(reducejob) // 通知完成了此次 reducejob
-	//fmt.Println("reduce finish ---- ", reducejob.ReduceID)
-	//lock.Unlock()
 }
 
 // Worker
@@ -150,16 +142,12 @@ func ReduceWorker(reducef func(string, []string) string, reducejob ReduceJob,
 func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string) string) {
 	for {
 		workerArgs := &WorkerReply{} // 传指针
-		//timeChannel := time.After(5 * time.Second) //计时器
 		ok := CallWorkerArgsReply(workerArgs)
 		//fmt.Println("Fin:---------", workerArgs.Fin)
 		if !ok { // call失败
 			//fmt.Println("---------- exit worker ---------- call fail")
 			workerArgs.Fin = 2
 		}
-		//if workerArgs.Fin == 0 {
-		//	fmt.Println(workerArgs)
-		//}
 		lock := sync.Mutex{} // 锁
 		if workerArgs.MapJob.MapName != "" {
 			//fmt.Println("MapID:", workerArgs.MapJob.MapID)
@@ -239,7 +227,6 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	if err == nil {
 		return true
 	}
-
 	//fmt.Println(err)
 	return false
 }
