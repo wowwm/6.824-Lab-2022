@@ -154,8 +154,8 @@ func Worker(mapf func(string, string) []KeyValue, reducef func(string, []string)
 		ok := CallWorkerArgsReply(workerArgs)
 		//fmt.Println("Fin:---------", workerArgs.Fin)
 		if !ok { // call失败
-			fmt.Println("---------- exit worker ---------- call fail")
-			break
+			//fmt.Println("---------- exit worker ---------- call fail")
+			workerArgs.Fin = 2
 		}
 		//if workerArgs.Fin == 0 {
 		//	fmt.Println(workerArgs)
@@ -231,7 +231,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 	sockname := coordinatorSock()
 	c, err := rpc.DialHTTP("unix", sockname) // 客户端连接服务端
 	if err != nil {
-		log.Fatal("dialing:", err)
+		//log.Fatal("dialing:", err)
 	}
 	defer c.Close()
 

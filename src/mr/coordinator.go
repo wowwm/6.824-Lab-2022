@@ -87,7 +87,7 @@ func (c *Coordinator) WorkerArgsReply(Fin int, workerArgs *WorkerReply) error {
 			for _, job := range jobs {
 				if workerArgs.MapJob.MapID == job.MapID {
 					c.mapChan <- job
-					fmt.Println("MapDown ", job.MapID)
+					//fmt.Println("MapDown ", job.MapID)
 				}
 			}
 		}()
@@ -104,15 +104,15 @@ func (c *Coordinator) WorkerArgsReply(Fin int, workerArgs *WorkerReply) error {
 			for _, job := range jobs {
 				if workerArgs.ReduceJob.ReduceID == job.ReduceID {
 					c.reduceChan <- job
-					fmt.Println("ReduceDown ", job.ReduceID)
+					//fmt.Println("ReduceDown ", job.ReduceID)
 				}
 			}
 		}()
-	} else if Fin == 2 {
-		//time.Sleep(time.Second * 5)
-		//fmt.Println("call last ==========")
+	} else {
+		//time.Sleep(time.Second * 10)
 		//c.Fin++
-		c.finishFlag <- true
+		//c.finishFlag <- true
+
 		// 让 Worker 正常退出后再退出 Coordinator
 		//workerArgs.Fin = 2
 		//Fin++
@@ -135,9 +135,8 @@ func (c *Coordinator) MapJobOK(mapjob MapJob, reply *string) error {
 	c.mapJobs = jobs
 	// Map 完成
 	if len(jobs) == 0 && len(c.mapChan) == 0 {
-		fmt.Println(" map fininsh -----")
+		//fmt.Println(" map fininsh -----")
 		c.Fin = 1
-		//time.Sleep(time.Second)
 	}
 	//fmt.Println("-- del mapjob: ", mapjob.MapID)
 	return nil
@@ -157,9 +156,8 @@ func (c *Coordinator) ReduceJobOK(reducejob ReduceJob, reply *string) error {
 	c.reduceJobs = jobs
 	// Reduce 完成
 	if len(jobs) == 0 && len(c.reduceChan) == 0 {
-		fmt.Println("reduce fininsh -----")
+		//fmt.Println("reduce fininsh -----")
 		c.Fin = 2
-		//c.finishFlag <- true
 	}
 	//fmt.Println("-- after del reduceJobs: ", c.reduceJobs)
 	return nil
