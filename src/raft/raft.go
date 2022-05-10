@@ -124,7 +124,6 @@ func (rf *Raft) readPersist(data []byte) {
 
 // CondInstallSnapshot
 // 一个服务想要切换到快照，只有在它传快照到 applyCh 以来，没有更新的信息时才这样做
-//
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// 用于 (2D).
@@ -181,7 +180,6 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	//DPrintf("raft %d 收到来自 raft %d 的请求投票", rf.me, args.CandidateId)
 	rf.mu.Lock()
 	if rf.state == 0 && args.Term >= rf.currentTerm { // follower 收到有效 RPC 即重置超时
 		rf.voteTimeout = false
@@ -231,7 +229,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-//
 // AppendEntries RPC 处理程序.
 //
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -315,12 +312,10 @@ func (rf *Raft) ticker() {
 		// 你的代码在这里检查是否应该开始领导选举并使用 time.Sleep() 随机化睡眠时间。
 		rand.Seed(time.Now().UnixNano())
 		sleepTime := rand.Intn(500) + 500
-		//fmt.Println("sleep: ", sleepTime)
 		time.Sleep(time.Millisecond * time.Duration(sleepTime))
 
 		rf.mu.Lock()
 		isTimeout := rf.voteTimeout
-		//fmt.Println(rf.voteTimeout)
 		state := rf.state
 		rf.mu.Unlock()
 
@@ -362,7 +357,6 @@ func (rf *Raft) candidateDo() {
 	wg.Add(len(peers) - 1) // 不包括自己
 	for server, _ := range peers {
 		if server != me {
-			//fmt.Println(server, " ", rf.me)
 
 			// 并发发请求投票，不要在 RPC 时持有锁
 			go func(server int) {
@@ -376,13 +370,8 @@ func (rf *Raft) candidateDo() {
 				if !ok {
 					DPrintf("raft %d 请求 %d 投票失败", rf.me, server)
 					return
-					//time.Sleep(time.Millisecond * 200)
-					//ok2 := rf.sendRequestVote(server, rvArgs, rvReply)
-					//if !ok2 {
-					//
-					//}
+
 				}
-				//fmt.Println("raft ", rf.me, "收到请求投票的回复为", rvReply, server)
 
 				rf.mu.Lock()
 				defer rf.mu.Unlock()
@@ -390,9 +379,6 @@ func (rf *Raft) candidateDo() {
 					DPrintf("raft %d 已不是 candidate，不再处理来自 %d 回复", rf.me, server)
 					return
 				}
-				//rf.mu.Unlock()
-				//rf.mu.Lock()
-				// 处理回复
 				if rvReply.Term > rf.currentTerm { // 自己的任期过期，更新任期，回到 follower
 					rf.currentTerm = rvReply.Term
 					rf.votedFor = -1 // 重置投票
@@ -447,12 +433,6 @@ func (rf *Raft) leaderDo() {
 					if !ok {
 						DPrintf("raft %d 发往 %d 的心跳失败", rf.me, server)
 						return
-						//time.Sleep(time.Millisecond * 200)
-						//ok2 := rf.sendAppendEntries(server, aeArgs, aeReply)
-						//if !ok2 {
-						//	DPrintf("raft %d 发往 %d 的心跳失败", rf.me, server)
-						//	return
-						//}
 					}
 					rf.mu.Lock()
 					if aeReply.Term > rf.currentTerm { // 任期过期变为 follower
