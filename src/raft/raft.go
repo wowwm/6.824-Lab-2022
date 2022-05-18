@@ -57,7 +57,7 @@ type Raft struct {
 	// 所有服务器上持久存在的（在响应RPCs之前已在稳定的存储上进行更新）
 	currentTerm int   // 服务器最后⼀次知道的任期号（初始化为 0，持续递增）
 	votedFor    int   // 在当前获得选票的候选⼈的 Id
-	log         []Log // ⽇志条⽬集；每⼀个条⽬包含⼀个⽤户状态机执⾏的指令，和收到时的任期号
+	logs        []Log // ⽇志条⽬集；每⼀个条⽬包含⼀个⽤户状态机执⾏的指令，和收到时的任期号
 	// 所有服务器上经常变的
 	commitIndex int // 已知的最⼤的已经被提交的⽇志条⽬的索引值
 	lastApplied int // 最后被应⽤到状态机的⽇志条⽬索引值（初始化为 0，持续递增）
@@ -67,12 +67,14 @@ type Raft struct {
 
 	voteTimeout bool // 选举超时标记，收到 RPC 就置为 false
 	state       int  // 当前状态，0 follower，1 candidate，2 leader
+
+	applyCh chan ApplyMsg //
 }
 
 // Log 日志条目结构体
 type Log struct {
-	command string // 执⾏的指令
-	logTerm int    // 收到时的任期号
+	Command interface{} // 执⾏的指令
+	LogTerm int         // 收到时的任期号
 }
 
 // GetState 返回 Raft 当前任期，已经它是否认为自己是 Leader
@@ -142,12 +144,12 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 // AppendEntriesArgs AppendEntries RPC 参数结构
 type AppendEntriesArgs struct {
-	Term     int // 领导⼈的任期号
-	LeaderId int // 领导⼈的 Id，以便于跟随者重定向请求
-	//PrevLogIndex int   // 新的⽇志条⽬紧随之前的索引值
-	//PrevLogTerm  int   // prevLogIndex 条⽬的任期号
-	//Entries      []Log // 准备存储的⽇志条⽬（表示⼼跳时为空；⼀次性发送多个是为了提⾼效率）
-	//LeaderCommit int   // 领导⼈已经提交的⽇志的索引值
+	Term         int   // 领导⼈的任期号
+	LeaderId     int   // 领导⼈的 Id，以便于跟随者重定向请求
+	PrevLogIndex int   // 新的⽇志条⽬紧随之前的索引值
+	PrevLogTerm  int   // prevLogIndex 条⽬的任期号
+	Entries      []Log // 准备存储的⽇志条⽬（表示⼼跳时为空；⼀次性发送多个是为了提⾼效率）
+	LeaderCommit int   // 领导⼈已经提交的⽇志的索引值
 }
 
 // AppendEntriesReply AppendEntries RPC 回复结构
@@ -175,9 +177,7 @@ type RequestVoteReply struct {
 	VoteGranted bool // 候选⼈赢得了此张选票时为 true
 }
 
-//
 // RequestVote RPC 处理程序.
-//
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	rf.mu.Lock()
@@ -230,7 +230,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 // AppendEntries RPC 处理程序.
-//
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
@@ -254,7 +253,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
-		DPrintf("raft %d %d 发现来自 %d 的心跳过时，返回 false", rf.me, rf.state, args.LeaderId)
+		DPrintf("raft %d %d 发现来自 %d 的心跳过时，返回 false，term = %d", rf.me, rf.state, args.LeaderId, rf.currentTerm)
 		reply.Success = false
 	} else {
 		// TODO 日志处理
@@ -279,12 +278,36 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // 如果此服务器认为它是领导者，则第三个返回值为 true。
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
-	// Your code here (2B).
-
+	isLeader := false
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	term := rf.currentTerm
+	index := len(rf.logs) // 命令在日志的索引
+	if rf.state == 2 {    // 	只有 Leader 回应 true
+		isLeader = true
+		DPrintf("客户端请求 Leader，command = %v", command)
+		// 客户端的请求添加到日志
+		log := Log{
+			Command: command,
+			LogTerm: rf.currentTerm,
+		}
+		rf.logs = append(rf.logs, log)
+		//peers := rf.peers
+		//leaderId := rf.me
+		//prevLogIndex := len(rf.logs) - 1 // FIXME 确定 Index 到底怎么取，这里让索引从0开始
+		//prevLogTerm := rf.logs[prevLogIndex].LogTerm
+		//entries := rf.logs[]
+		//leaderCommit := rf.commitIndex
+		//// 发 AE RPC
+		//aeArgs := &AppendEntriesArgs{
+		//	Term:         term,
+		//	LeaderId:     leaderId,
+		//	PrevLogIndex: prevLogIndex,
+		//	PrevLogTerm:  prevLogTerm,
+		//	Entries:      entries,
+		//	LeaderCommit: leaderCommit,
+		//}
+	}
 	return index, term, isLeader
 }
 
@@ -322,10 +345,10 @@ func (rf *Raft) ticker() {
 		if state == 2 {
 			DPrintf("raft %d 此时为 leader，结束选举循环", rf.me)
 			break // 是 leader 则结束选举循环
-			// TODO leader 变为 follower 要重新开始选举循环
 		}
 
 		if isTimeout { // 选举超时
+			// FIXME 这里看需不需要加个 WaitGroup
 			go rf.candidateDo()
 		} else { // 选举未超时
 			DPrintf("raft %d 检查选举未超时", rf.me)
@@ -406,6 +429,15 @@ func (rf *Raft) candidateDo() {
 // leader 要实现的功能
 func (rf *Raft) leaderDo() {
 	DPrintf("leader %d 开始工作循环，当前任期 %d", rf.me, rf.currentTerm)
+	// 每次新 Leader 初始化 nextIndex 和 matchIndex
+	rf.mu.Lock()
+	rf.nextIndex = make([]int, len(rf.peers))  // 对于每⼀个服务器，需要发送给他的下⼀个⽇志条⽬的索引值（初始化为领导⼈最后索引值加⼀）
+	rf.matchIndex = make([]int, len(rf.peers)) // 对于每⼀个服务器，已经复制给他的⽇志的最⾼索引值
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = rf.commitIndex + 1
+		rf.matchIndex[i] = rf.commitIndex
+	}
+	rf.mu.Unlock()
 	for rf.killed() == false { // 成为 leader 后一直在这个循环
 		rf.mu.Lock()
 		if rf.state != 2 { // 卸任 leader 后启动 ticker
@@ -415,38 +447,58 @@ func (rf *Raft) leaderDo() {
 			return
 		}
 		peers := rf.peers
-		me := rf.me
-		currentTerm := rf.currentTerm
+		term := rf.currentTerm
+		leaderId := rf.me
+		prevLogIndex := 0
+		prevLogTerm := 0
+		if len(rf.logs) > 0 { // 有日志后
+			prevLogIndex = len(rf.logs) // FIXME 确定 Index 到底怎么取，这里让索引从 1 开始
+			prevLogTerm = rf.logs[prevLogIndex-1].LogTerm
+		}
+		entries := make([]Log, 0)
+		leaderCommit := rf.commitIndex
 		rf.mu.Unlock()
+		aeArgs := &AppendEntriesArgs{
+			Term:         term,
+			LeaderId:     leaderId,
+			PrevLogIndex: prevLogIndex,
+			PrevLogTerm:  prevLogTerm,
+			Entries:      entries,
+			LeaderCommit: leaderCommit,
+		}
 
 		DPrintf("raft %d leader 心跳", rf.me)
 		// 发一次心跳
-		for server, _ := range peers {
-			if server != me {
-				go func(server int) {
-					aeArgs := &AppendEntriesArgs{
-						Term:     currentTerm,
-						LeaderId: me,
-					}
-					aeReply := &AppendEntriesReply{}
-					ok := rf.sendAppendEntries(server, aeArgs, aeReply)
-					if !ok {
-						DPrintf("raft %d 发往 %d 的心跳失败", rf.me, server)
-						return
-					}
-					rf.mu.Lock()
-					if aeReply.Term > rf.currentTerm { // 任期过期变为 follower
-						DPrintf("leader %d 心跳回复发现任期过期，变为 follower", rf.me)
-						rf.currentTerm = aeReply.Term
-						rf.votedFor = -1
-						rf.state = 0
-						rf.voteTimeout = false
-					}
-					rf.mu.Unlock()
-				}(server)
-			}
-		}
+		rf.leaderAERPC(peers, aeArgs)
 		time.Sleep(time.Millisecond * 100)
+	}
+}
+
+// 用于 Leader 发一次 AE RPC
+func (rf *Raft) leaderAERPC(peers []*labrpc.ClientEnd, aeArgs *AppendEntriesArgs) {
+	for server, _ := range peers {
+		if server != aeArgs.LeaderId {
+			go func(server int) {
+				aeReply := &AppendEntriesReply{}
+				ok := rf.sendAppendEntries(server, aeArgs, aeReply)
+				if !ok {
+					DPrintf("raft %d 发往 %d 的 AE RPC 失败", rf.me, server)
+					return
+				}
+				rf.mu.Lock()
+
+				// 处理 AE RPC 的返回值
+				if aeReply.Term > rf.currentTerm { // 任期过期变为 follower
+					DPrintf("leader %d 收到 AE RPC 回复发现任期过期，变为 follower", rf.me)
+					rf.currentTerm = aeReply.Term
+					rf.votedFor = -1
+					rf.state = 0
+					rf.voteTimeout = false
+				}
+				// TODO 处理 success 日志不一致情况
+				rf.mu.Unlock()
+			}(server)
+		}
 	}
 }
 
@@ -463,10 +515,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
-	// Your initialization code here (2A, 2B, 2C).
+
+	// Your initialization code here (2A)
 	rf.currentTerm = 0    // 初始化当前任期
 	rf.voteTimeout = true // 初始化超时标记
 	rf.votedFor = -1      // -1 表示未投票，每个新任期重置
+
+	// Your initialization code here (2B)
+	// 注意数组索引从 0 开始，日志索引从 1 开始
+	rf.commitIndex = 0                      // 已知的最⼤的已经被提交的⽇志条⽬的索引值
+	rf.lastApplied = 0                      // 最后被应⽤到状态机的⽇志条⽬索引值
+	rf.nextIndex = make([]int, len(peers))  // 对于每⼀个服务器，需要发送给他的下⼀个⽇志条⽬的索引值（初始化为领导⼈最后索引值加⼀）
+	rf.matchIndex = make([]int, len(peers)) // 对于每⼀个服务器，已经复制给他的⽇志的最⾼索引值
+	for i := 0; i < len(peers); i++ {
+		rf.nextIndex[i] = 1
+		//rf.matchIndex[i] = 0
+	}
 
 	// 从崩溃前持续的状态初始化
 	rf.readPersist(persister.ReadRaftState())
