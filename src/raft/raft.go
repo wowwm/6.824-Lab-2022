@@ -233,31 +233,33 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	DPrintf("raft %d %d 收到来自 %d 的心跳", rf.me, rf.state, args.LeaderId)
-	if rf.state == 0 && args.Term >= rf.currentTerm { // follower 收到有效 RPC 即重置超时
+	DPrintf("raft %d %d 收到来自 %d 的 AE PRC", rf.me, rf.state, args.LeaderId)
+	// follower 收到有效 RPC 即重置超时
+	if rf.state == 0 && args.Term >= rf.currentTerm {
 		DPrintf("raft %d %d 重置超时", rf.me, rf.state)
 		rf.voteTimeout = false
 	}
-	if args.Term > rf.currentTerm { // 比较任期号，若过时则更新并转为 follower
+	// candidate 收到心跳任期不小于自己的当前任期，则自己变为 Follower
+	if rf.state == 1 && args.Term == rf.currentTerm {
+		DPrintf("raft %d candidate 收到正常 leader 心跳，变为 follower", rf.me)
+		rf.votedFor = -1 // 重置投票
+		rf.state = 0
+		rf.voteTimeout = false
+	} else if args.Term > rf.currentTerm {
+		// 比较任期号，若过时则更新并转为 follower
 		DPrintf("raft %d 收到心跳发现任期过时", rf.me)
 		rf.currentTerm = args.Term
 		rf.votedFor = -1 // 重置投票
 		rf.state = 0
 		rf.voteTimeout = false
-	} else if rf.state == 1 && args.Term == rf.currentTerm {
-		// candidate 收到心跳任期不小于自己的当前任期，则自己变为 Follower
-		DPrintf("raft %d candidate 收到正常 leader 心跳，变为 follower", rf.me)
-		rf.votedFor = -1 // 重置投票
-		rf.state = 0
-		rf.voteTimeout = false
 	}
-	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
-		DPrintf("raft %d %d 发现来自 %d 的心跳过时，返回 false，term = %d", rf.me, rf.state, args.LeaderId, rf.currentTerm)
+		DPrintf("raft %d %d 发现来自 %d 的 AE RPC 过时，返回 false，term = %d", rf.me, rf.state, args.LeaderId, rf.currentTerm)
 		reply.Success = false
 	} else {
 		// TODO 日志处理
 	}
+	reply.Term = rf.currentTerm
 
 }
 
@@ -280,10 +282,9 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := false
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	term := rf.currentTerm
-	index := len(rf.logs) // 命令在日志的索引
-	if rf.state == 2 {    // 	只有 Leader 回应 true
+	index := len(rf.logs) + 1 // 命令在日志的索引  // FIXME 确定 Index 到底怎么取，这里让索引从1开始
+	if rf.state == 2 {        // 	只有 Leader 回应 true
 		isLeader = true
 		DPrintf("客户端请求 Leader，command = %v", command)
 		// 客户端的请求添加到日志
@@ -292,21 +293,36 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			LogTerm: rf.currentTerm,
 		}
 		rf.logs = append(rf.logs, log)
-		//peers := rf.peers
-		//leaderId := rf.me
-		//prevLogIndex := len(rf.logs) - 1 // FIXME 确定 Index 到底怎么取，这里让索引从0开始
-		//prevLogTerm := rf.logs[prevLogIndex].LogTerm
-		//entries := rf.logs[]
-		//leaderCommit := rf.commitIndex
-		//// 发 AE RPC
-		//aeArgs := &AppendEntriesArgs{
-		//	Term:         term,
-		//	LeaderId:     leaderId,
-		//	PrevLogIndex: prevLogIndex,
-		//	PrevLogTerm:  prevLogTerm,
-		//	Entries:      entries,
-		//	LeaderCommit: leaderCommit,
-		//}
+
+		// 发 AE RPC
+		peers := rf.peers
+		leaderId := rf.me
+		prevLogIndex := 0
+		prevLogTerm := 0
+		if len(rf.logs) > 0 { // 有日志后
+			prevLogIndex = len(rf.logs) // FIXME 确定 Index 到底怎么取，这里让索引从 1 开始
+			prevLogTerm = rf.logs[prevLogIndex-1].LogTerm
+		}
+		leaderCommit := rf.commitIndex
+		rf.mu.Unlock()
+		for serverID, _ := range peers {
+			if serverID != leaderId {
+				rf.mu.Lock()
+				// 每个 follower 需要的下一个条目不一样, 用 nextIndex 维护
+				entries := rf.logs[rf.nextIndex[serverID]:]
+				rf.mu.Unlock()
+				aeArgs := &AppendEntriesArgs{
+					Term:         term,
+					LeaderId:     leaderId,
+					PrevLogIndex: prevLogIndex,
+					PrevLogTerm:  prevLogTerm,
+					Entries:      entries,
+					LeaderCommit: leaderCommit,
+				}
+				DPrintf("Leader 发 AE PRC，aeArgs = %v", aeArgs)
+				go rf.leaderAERPC(serverID, aeArgs)
+			}
+		}
 	}
 	return index, term, isLeader
 }
@@ -469,37 +485,36 @@ func (rf *Raft) leaderDo() {
 
 		DPrintf("raft %d leader 心跳", rf.me)
 		// 发一次心跳
-		rf.leaderAERPC(peers, aeArgs)
+		for serverID, _ := range peers {
+			if serverID != leaderId {
+				go rf.leaderAERPC(serverID, aeArgs)
+			}
+		}
+
 		time.Sleep(time.Millisecond * 100)
 	}
 }
 
-// 用于 Leader 发一次 AE RPC
-func (rf *Raft) leaderAERPC(peers []*labrpc.ClientEnd, aeArgs *AppendEntriesArgs) {
-	for server, _ := range peers {
-		if server != aeArgs.LeaderId {
-			go func(server int) {
-				aeReply := &AppendEntriesReply{}
-				ok := rf.sendAppendEntries(server, aeArgs, aeReply)
-				if !ok {
-					DPrintf("raft %d 发往 %d 的 AE RPC 失败", rf.me, server)
-					return
-				}
-				rf.mu.Lock()
-
-				// 处理 AE RPC 的返回值
-				if aeReply.Term > rf.currentTerm { // 任期过期变为 follower
-					DPrintf("leader %d 收到 AE RPC 回复发现任期过期，变为 follower", rf.me)
-					rf.currentTerm = aeReply.Term
-					rf.votedFor = -1
-					rf.state = 0
-					rf.voteTimeout = false
-				}
-				// TODO 处理 success 日志不一致情况
-				rf.mu.Unlock()
-			}(server)
-		}
+// 用于 Leader 发一次 AE RPC，使用协程
+func (rf *Raft) leaderAERPC(server int, aeArgs *AppendEntriesArgs) {
+	aeReply := &AppendEntriesReply{}
+	ok := rf.sendAppendEntries(server, aeArgs, aeReply)
+	if !ok {
+		DPrintf("raft %d 发往 %d 的 AE RPC 失败", rf.me, server)
+		return
 	}
+	rf.mu.Lock()
+
+	// 处理 AE RPC 的返回值
+	if aeReply.Term > rf.currentTerm { // 任期过期变为 follower
+		DPrintf("leader %d 收到 AE RPC 回复发现任期过期，变为 follower", rf.me)
+		rf.currentTerm = aeReply.Term
+		rf.votedFor = -1
+		rf.state = 0
+		rf.voteTimeout = false
+	}
+	// TODO 处理 success 日志不一致情况
+	rf.mu.Unlock()
 }
 
 // Make
