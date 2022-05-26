@@ -185,16 +185,30 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.voteTimeout = false
 	}
 	if args.Term > rf.currentTerm { // 比较任期号，若过时则更新并转为 follower
-		DPrintf("raft %d 收到请求投票发现任期过时", rf.me)
+		//DPrintf("raft %d 收到请求投票发现任期过时", rf.me)
 		rf.currentTerm = args.Term
 		rf.votedFor = -1 // 重置投票
 		rf.state = 0
 		rf.voteTimeout = false
 	}
 	reply.Term = rf.currentTerm
+	// 判断日志新旧
+	logFlag := true
+	//if rf.matchIndex[rf.me] != 0 {
+	//	DPrintf("raft %d logTerm=%d logindex=%d 收到请求投票 args=%v", rf.me, rf.logs[len(rf.logs)].LogTerm, rf.matchIndex[rf.me], args)
+	//	if args.LastLogTerm < rf.logs[len(rf.logs)-1].LogTerm {
+	//		logFlag = false
+	//	} else if args.LastLogTerm == rf.currentTerm {
+	//		if args.LastLogIndex < rf.matchIndex[rf.me] {
+	//			logFlag = false
+	//		}
+	//	}
+	//}
+
 	// 如果任期比自己小，或者已投票，拒绝投票
-	if args.Term < rf.currentTerm || rf.votedFor != -1 {
+	if args.Term < rf.currentTerm || rf.votedFor != -1 || !logFlag {
 		reply.VoteGranted = false
+		DPrintf("raft %d 拒绝给 raft %d 投票", rf.me, rf.votedFor)
 	} else {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
@@ -224,7 +238,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // 并且调用者使用 & 传递了回复结构的地址，而不是结构本身。
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	DPrintf("raft %d 请求 raft %d 投票", rf.me, server)
+	//DPrintf("raft %d 请求 raft %d 投票", rf.me, server)
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -254,12 +268,14 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// TODO 日志处理 这里试试心跳不进行处理
 		if len(args.Entries) != 0 {
-			DPrintf("raft %d 日志处理", rf.me)
+			DPrintf("raft %d 开始日志处理", rf.me)
 			// FIXME 这里的前提是 follower 的日志序号不会比 Leader 已知的小
 			if len(rf.logs) == 0 || args.PrevLogIndex == 0 {
 				// 直接追加
 				rf.logs = make([]Log, 0)
 				rf.logs = append(rf.logs, args.Entries...)
+				rf.nextIndex[rf.me] = len(args.Entries) + 1
+				rf.matchIndex[rf.me] = len(args.Entries)
 				DPrintf("raft %d 追加第一份日志成功，logs = %v", rf.me, rf.logs)
 			} else {
 				if args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm {
@@ -269,9 +285,22 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 					// 删除后追加
 					rf.logs = rf.logs[:args.PrevLogIndex]
 					rf.logs = append(rf.logs, args.Entries...)
-					DPrintf("raft %d 追加日志成功，logs = %v", rf.me, rf.logs)
+					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
+					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
+					DPrintf("raft %d 追加日志成功", rf.me)
 				}
 			}
+		}
+		// 检查 Leader 提交情况
+		if args.LeaderCommit > rf.commitIndex && rf.matchIndex[rf.me] == args.LeaderCommit {
+			rf.commitIndex = args.LeaderCommit
+			applyMsg := ApplyMsg{
+				CommandValid: true,
+				Command:      rf.logs[rf.commitIndex-1].Command,
+				CommandIndex: rf.commitIndex,
+			}
+			DPrintf("raft %d 检测到新的日志提交，提交日志，CommandIndex=%v", rf.me, rf.commitIndex)
+			rf.applyCh <- applyMsg
 		}
 	}
 
@@ -301,7 +330,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	state := rf.state
 	rf.mu.Unlock()
 	if state == 2 { // 	只有 Leader 回应 true
-		DPrintf("客户端请求 leader raft %d command = %v", rf.me, command)
+		DPrintf("客户端请求 leader raft %d command=%v", rf.me, command)
 		isLeader = true
 		// 客户端的请求添加到日志
 		rf.mu.Lock()
@@ -311,7 +340,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			LogTerm: rf.currentTerm,
 		}
 		rf.logs = append(rf.logs, log)
-		DPrintf("Leader 将 command = %v 添加到日志 %v", command, log)
+		// 更新自己的 nextIndex matchIndex
+		rf.nextIndex[rf.me]++
+		rf.matchIndex[rf.me]++
+		DPrintf("Leader 将 command 添加到日志")
 		// 发 AE RPC
 		peers := rf.peers
 		leaderId := rf.me
@@ -337,12 +369,12 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					Entries:      entries,
 					LeaderCommit: leaderCommit,
 				}
-				DPrintf("Leader 发 AE PRC，aeArgs = %v", aeArgs)
+				DPrintf("Leader %d 发 AE PRC，PrevLogIndex = %v", rf.me, prevLogIndex)
 				go rf.leaderAERPC(serverID, aeArgs)
 			}
 		}
 	}
-	DPrintf("返回给应用层的：index = %d, term = %d, isLeader = %v", index, term, isLeader)
+	DPrintf("raft %d 返回给应用层的：index = %d, term = %d, isLeader = %v", rf.me, index, term, isLeader)
 	return index, term, isLeader
 }
 
@@ -406,6 +438,11 @@ func (rf *Raft) candidateDo() {
 	peers := rf.peers
 	me := rf.me
 	currentTerm := rf.currentTerm
+	lastLogIndex := rf.matchIndex[rf.me]
+	lastLogTerm := 0
+	if lastLogIndex != 0 {
+		lastLogTerm = rf.logs[lastLogIndex-1].LogTerm
+	}
 	rf.mu.Unlock()
 
 	// 请求投票
@@ -419,8 +456,10 @@ func (rf *Raft) candidateDo() {
 			go func(server int) {
 				defer wg.Done()
 				rvArgs := &RequestVoteArgs{
-					Term:        currentTerm,
-					CandidateId: me,
+					Term:         currentTerm,
+					CandidateId:  me,
+					LastLogIndex: lastLogIndex,
+					LastLogTerm:  lastLogTerm,
 				}
 				rvReply := &RequestVoteReply{}
 				ok := rf.sendRequestVote(server, rvArgs, rvReply)
@@ -448,7 +487,7 @@ func (rf *Raft) candidateDo() {
 						// 票数过半，成为 leader，启动 leader 循环
 						if voteNum > len(rf.peers)/2 {
 							rf.state = 2
-							DPrintf("candidate %d 成为 leader %d，当前任期 %d", rf.me, rf.state, rf.currentTerm)
+							//DPrintf("candidate %d 成为 leader state=%d，当前任期 %d", rf.me, rf.state, rf.currentTerm)
 							go rf.leaderDo()
 						}
 					}
@@ -472,6 +511,9 @@ func (rf *Raft) leaderDo() {
 		rf.matchIndex[i] = rf.commitIndex
 	}
 	rf.mu.Unlock()
+	// 上任后先提交一个空命令
+	//rf.Start(nil)
+
 	for rf.killed() == false { // 成为 leader 后一直在这个循环
 		rf.mu.Lock()
 		if rf.state != 2 { // 卸任 leader 后启动 ticker
@@ -552,7 +594,7 @@ func (rf *Raft) leaderAERPC(server int, aeArgs *AppendEntriesArgs) {
 			DPrintf("leader %d 收到来自 raft %d 的回复 %v，追加成功", rf.me, server, aeReply)
 			rf.nextIndex[server] = rf.nextIndex[server] + len(aeArgs.Entries)
 			rf.matchIndex[server] = rf.matchIndex[server] + len(aeArgs.Entries)
-			DPrintf("rf.nextIndex[server] = %d rf.matchIndex[server] = %d", rf.nextIndex[server], rf.matchIndex[server])
+			DPrintf("leader %d 更新：rf.nextIndex[%d] = %d rf.matchIndex[%d] = %d", rf.me, server, rf.nextIndex[server], server, rf.matchIndex[server])
 			go rf.commitEntries() // 检查是否可以提交
 		}
 	}
@@ -562,6 +604,10 @@ func (rf *Raft) commitEntries() {
 	eMap := map[int]int{}
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	if rf.commitIndex == rf.matchIndex[rf.me] {
+		return // 已经提交过了
+	}
+	DPrintf("此时 rf.matchIndex = %d", rf.matchIndex)
 	for _, v := range rf.matchIndex {
 		eMap[v]++
 	}
@@ -576,7 +622,7 @@ func (rf *Raft) commitEntries() {
 				Command:      rf.logs[k-1].Command,
 				CommandIndex: k,
 			}
-			DPrintf("leader 给应用层发 applyMsg = %v", applyMsg)
+			DPrintf("leader 给应用层发 CommandIndex = %v", k)
 			rf.applyCh <- applyMsg
 		}
 	}
