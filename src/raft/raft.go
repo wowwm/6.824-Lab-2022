@@ -14,6 +14,7 @@ package raft
 //
 
 import (
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -192,23 +193,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.voteTimeout = false
 	}
 	reply.Term = rf.currentTerm
+
 	// 判断日志新旧
 	logFlag := true
-	//if rf.matchIndex[rf.me] != 0 {
-	//	DPrintf("raft %d logTerm=%d logindex=%d 收到请求投票 args=%v", rf.me, rf.logs[len(rf.logs)].LogTerm, rf.matchIndex[rf.me], args)
-	//	if args.LastLogTerm < rf.logs[len(rf.logs)-1].LogTerm {
-	//		logFlag = false
-	//	} else if args.LastLogTerm == rf.currentTerm {
-	//		if args.LastLogIndex < rf.matchIndex[rf.me] {
-	//			logFlag = false
-	//		}
-	//	}
-	//}
+	myLogIndex := rf.matchIndex[rf.me]
+	myLogTerm := 0
+	if myLogIndex != 0 {
+		myLogTerm = rf.logs[myLogIndex-1].LogTerm
+	}
+	if args.LastLogTerm < myLogTerm {
+		logFlag = false
+	} else if args.LastLogTerm == myLogTerm {
+		if args.LastLogIndex < myLogIndex {
+			logFlag = false
+		}
+	}
 
-	// 如果任期比自己小，或者已投票，拒绝投票
+	// 如果任期比自己小，或者已投票，或者日志没有自己新，拒绝投票
 	if args.Term < rf.currentTerm || rf.votedFor != -1 || !logFlag {
 		reply.VoteGranted = false
-		DPrintf("raft %d 拒绝给 raft %d 投票", rf.me, rf.votedFor)
+		DPrintf("raft %d 拒绝给 raft %d 投票", rf.me, args.CandidateId)
 	} else {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
@@ -278,29 +282,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 				rf.matchIndex[rf.me] = len(args.Entries)
 				DPrintf("raft %d 追加第一份日志成功，logs = %v", rf.me, rf.logs)
 			} else {
-				if args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm {
+				if rf.matchIndex[rf.me] < args.PrevLogIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm {
+					fmt.Println(rf.matchIndex[rf.me], args.PrevLogIndex, args.PrevLogTerm, rf.logs)
 					reply.Success = false // 上次日志任期不匹配，返回 false
-					DPrintf("raft %d 发现上次日志任期不匹配，返回 false", rf.me)
+					DPrintf("raft %d 发现上次日志任期不匹配，logs=%v，返回 false", rf.me, rf.logs)
 				} else {
 					// 删除后追加
 					rf.logs = rf.logs[:args.PrevLogIndex]
 					rf.logs = append(rf.logs, args.Entries...)
 					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
 					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
-					DPrintf("raft %d 追加日志成功", rf.me)
+					DPrintf("raft %d 追加日志成功,nextIndex = %d matchIndex = %d", rf.me, rf.nextIndex[rf.me], rf.matchIndex[rf.me])
 				}
 			}
 		}
 		// 检查 Leader 提交情况
 		if args.LeaderCommit > rf.commitIndex && rf.matchIndex[rf.me] == args.LeaderCommit {
-			rf.commitIndex = args.LeaderCommit
-			applyMsg := ApplyMsg{
-				CommandValid: true,
-				Command:      rf.logs[rf.commitIndex-1].Command,
-				CommandIndex: rf.commitIndex,
+			for i := rf.commitIndex; i < args.LeaderCommit; i++ {
+				applyMsg := ApplyMsg{
+					CommandValid: true,
+					Command:      rf.logs[i].Command,
+					CommandIndex: i + 1,
+				}
+				DPrintf("raft %d 检测到新的日志提交，提交日志，applyMsg=%v", rf.me, applyMsg)
+				rf.applyCh <- applyMsg
 			}
-			DPrintf("raft %d 检测到新的日志提交，提交日志，CommandIndex=%v", rf.me, rf.commitIndex)
-			rf.applyCh <- applyMsg
+			rf.commitIndex = args.LeaderCommit
 		}
 	}
 
@@ -330,6 +337,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	state := rf.state
 	rf.mu.Unlock()
 	if state == 2 { // 	只有 Leader 回应 true
+		DPrintf("----------------------------------")
 		DPrintf("客户端请求 leader raft %d command=%v", rf.me, command)
 		isLeader = true
 		// 客户端的请求添加到日志
@@ -369,7 +377,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					Entries:      entries,
 					LeaderCommit: leaderCommit,
 				}
-				DPrintf("Leader %d 发 AE PRC，PrevLogIndex = %v", rf.me, prevLogIndex)
+				DPrintf("Leader %d 发 AE RPC，PrevLogIndex = %v aeArgs = %v", rf.me, prevLogIndex, aeArgs)
 				go rf.leaderAERPC(serverID, aeArgs)
 			}
 		}
@@ -507,8 +515,8 @@ func (rf *Raft) leaderDo() {
 	rf.nextIndex = make([]int, len(rf.peers))  // 对于每⼀个服务器，需要发送给他的下⼀个⽇志条⽬的索引值（初始化为领导⼈最后索引值加⼀）
 	rf.matchIndex = make([]int, len(rf.peers)) // 对于每⼀个服务器，已经复制给他的⽇志的最⾼索引值
 	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = rf.commitIndex + 1
-		rf.matchIndex[i] = rf.commitIndex
+		rf.nextIndex[i] = len(rf.logs) + 1
+		rf.matchIndex[i] = len(rf.logs)
 	}
 	rf.mu.Unlock()
 	// 上任后先提交一个空命令
@@ -582,6 +590,7 @@ func (rf *Raft) leaderAERPC(server int, aeArgs *AppendEntriesArgs) {
 			}
 			// 处理 success 日志不一致情况
 			rf.nextIndex[server]--
+			rf.matchIndex[server]--
 			aeArgs.Entries = rf.logs[rf.nextIndex[server]-1:]
 			aeArgs.PrevLogIndex = rf.nextIndex[server] - 1
 			aeArgs.PrevLogTerm = rf.logs[aeArgs.PrevLogIndex-1].LogTerm
@@ -613,17 +622,17 @@ func (rf *Raft) commitEntries() {
 	}
 	for k := range eMap {
 		if k > rf.commitIndex && eMap[k] > len(rf.peers)/2 && rf.logs[k-1].LogTerm == rf.currentTerm {
+			for i := rf.commitIndex; i < k; i++ {
+				applyMsg := ApplyMsg{
+					CommandValid: true,
+					Command:      rf.logs[i].Command,
+					CommandIndex: i + 1,
+				}
+				DPrintf("leader 给应用层发 applyMsg = %v", applyMsg)
+				rf.applyCh <- applyMsg
+			}
 			rf.commitIndex = k
 			DPrintf("leader %d 更新 commitIndex = %d，eMap = %v", rf.me, k, eMap)
-
-			// 给应用层发 applyMsg
-			applyMsg := ApplyMsg{
-				CommandValid: true,
-				Command:      rf.logs[k-1].Command,
-				CommandIndex: k,
-			}
-			DPrintf("leader 给应用层发 CommandIndex = %v", k)
-			rf.applyCh <- applyMsg
 		}
 	}
 }
