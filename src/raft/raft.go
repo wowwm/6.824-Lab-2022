@@ -251,7 +251,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	//DPrintf("raft %d state = %d 收到来自 %d 的 AE PRC", rf.me, rf.state, args.LeaderId)
+	//DPrintf("raft %d state = %d 收到来自 %d 的 AE PRC，args=%v", rf.me, rf.state, args.LeaderId, args)
 	reply.Term = rf.currentTerm
 	reply.Success = true // 默认回复 true
 
@@ -272,39 +272,24 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		// TODO 日志处理 这里试试心跳不进行处理
 		if len(args.Entries) != 0 {
-			DPrintf("raft %d 开始日志处理", rf.me)
+			DPrintf("raft %d 开始日志处理，log=%v，Entries=%v", rf.me, rf.logs, args.Entries)
 			// FIXME 这里的前提是 follower 的日志序号不会比 Leader 已知的小
-
-			if len(rf.logs) == 0 || args.PrevLogIndex == 0 {
-				if args.PrevLogIndex == 0 && len(rf.logs) == 0 {
-					// 直接追加
-					rf.logs = make([]Log, 0)
-					rf.logs = append(rf.logs, args.Entries...)
-					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
-					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
-					DPrintf("raft %d 追加第一份日志成功，logs = %v", rf.me, rf.logs)
-				} else {
-					for i, entry := range args.Entries {
-						if len(rf.logs) <= args.PrevLogIndex+i {
-							rf.logs = append(rf.logs, args.Entries[i:]...)
-							break
-						} else if rf.logs[args.PrevLogIndex+i].LogTerm != entry.LogTerm {
-							rf.logs = rf.logs[:args.PrevLogIndex+i]
-							rf.logs = append(rf.logs, args.Entries[i:]...)
-							break
-						}
-					}
-					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
-					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
-				}
+			if len(rf.logs) == 0 {
+				// 直接追加
+				rf.logs = make([]Log, 0)
+				rf.logs = append(rf.logs, args.Entries...)
+				rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
+				rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
+				DPrintf("raft %d 追加第一份日志成功，logs = %v", rf.me, rf.logs)
 			} else {
-				if rf.matchIndex[rf.me] < args.PrevLogIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm {
+				if args.PrevLogIndex != 0 && (rf.matchIndex[rf.me] < args.PrevLogIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm) {
 					//fmt.Println(rf.matchIndex[rf.me], args.PrevLogIndex, args.PrevLogTerm, rf.logs)
 					reply.Success = false // 上次日志任期不匹配，返回 false
 					DPrintf("raft %d 发现上次日志任期不匹配，logs=%v，返回 false", rf.me, rf.logs)
 				} else {
 					// 如果现有的⽇志条⽬和新的产⽣冲突（索引相同任期号不同），删除现有的和之后所有的条目
 					for i, entry := range args.Entries {
+						// 5,2
 						if len(rf.logs) <= args.PrevLogIndex+i {
 							rf.logs = append(rf.logs, args.Entries[i:]...)
 							break
@@ -314,8 +299,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 							break
 						}
 					}
-					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
-					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
+					rf.nextIndex[rf.me] = len(rf.logs) + 1
+					rf.matchIndex[rf.me] = len(rf.logs)
 					DPrintf("raft %d 追加日志成功,nextIndex = %d matchIndex = %d,logs=%v", rf.me, rf.nextIndex[rf.me], rf.matchIndex[rf.me], rf.logs)
 
 				}
@@ -323,7 +308,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.LastLogIndex = rf.matchIndex[rf.me] // 更新回复最后的索引
 		}
 		// 检查 Leader 提交情况
-		if args.LeaderCommit > rf.commitIndex && rf.matchIndex[rf.me] == args.LeaderCommit {
+		if args.LeaderCommit > rf.commitIndex && rf.matchIndex[rf.me] == args.LeaderCommit && rf.logs[args.LeaderCommit-1].LogTerm == args.Term {
 			for i := rf.commitIndex; i < args.LeaderCommit; i++ {
 				applyMsg := ApplyMsg{
 					CommandValid: true,
@@ -386,11 +371,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		for serverID, _ := range peers {
 			if serverID != leaderId {
 				// 每个 follower 需要的下一个条目不一样, 用 nextIndex 维护
-				entries := rf.logs[rf.nextIndex[serverID]-1:]
-				if rf.nextIndex[serverID] > 1 {
-					prevLogIndex = rf.nextIndex[serverID] - 1 // FIXME 这里让索引从 1 开始
+				if rf.matchIndex[serverID] > 0 {
+					prevLogIndex = rf.matchIndex[serverID] // FIXME 这里让索引从 1 开始
 					prevLogTerm = rf.logs[prevLogIndex-1].LogTerm
 				}
+				entries := rf.logs[prevLogIndex:]
 				aeArgs := &AppendEntriesArgs{
 					Term:         term,
 					LeaderId:     leaderId,
@@ -399,7 +384,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 					Entries:      entries,
 					LeaderCommit: leaderCommit,
 				}
-				DPrintf("Leader %d 发 AE RPC，PrevLogIndex = %v aeArgs = %v", rf.me, prevLogIndex, aeArgs)
+				DPrintf("Leader %d 发 AE RPC 给 %d，PrevLogIndex = %v aeArgs = %v", rf.me, serverID, prevLogIndex, aeArgs)
 				go rf.leaderAERPC(serverID, aeArgs)
 			}
 		}
@@ -494,9 +479,8 @@ func (rf *Raft) candidateDo() {
 				rvReply := &RequestVoteReply{}
 				ok := rf.sendRequestVote(server, rvArgs, rvReply)
 				if !ok {
-					DPrintf("raft %d 请求 %d 投票失败", rf.me, server)
+					//DPrintf("raft %d 请求 %d 投票失败", rf.me, server)
 					return
-
 				}
 
 				rf.mu.Lock()
@@ -591,7 +575,15 @@ func (rf *Raft) leaderAERPC(server int, aeArgs *AppendEntriesArgs) {
 	aeReply := &AppendEntriesReply{}
 	ok := rf.sendAppendEntries(server, aeArgs, aeReply)
 	if !ok {
-		DPrintf("raft %d 发往 %d 的 AE RPC 失败", rf.me, server)
+		term, isLeader := rf.GetState()
+		if isLeader && term == aeArgs.Term {
+			go rf.leaderAERPC(server, aeArgs)
+			return
+			//ok2 := rf.sendAppendEntries(server, aeArgs, aeReply)
+			//if !ok2 {
+			//	DPrintf("raft %d 发往 %d 的 AE RPC 失败", rf.me, server)
+			//}
+		}
 		return
 	}
 	rf.mu.Lock()
@@ -611,10 +603,13 @@ func (rf *Raft) leaderAERPC(server int, aeArgs *AppendEntriesArgs) {
 				return // 检查自己还是不是 Leader
 			}
 			// 处理 success 日志不一致情况
+			if rf.matchIndex[server]-1 < 0 {
+				return
+			}
 			rf.nextIndex[server]--
 			rf.matchIndex[server]--
-			aeArgs.Entries = rf.logs[rf.nextIndex[server]-1:]
-			aeArgs.PrevLogIndex = rf.nextIndex[server] - 1
+			aeArgs.Entries = rf.logs[rf.matchIndex[server]:]
+			aeArgs.PrevLogIndex = rf.matchIndex[server]
 			aeArgs.PrevLogTerm = rf.logs[aeArgs.PrevLogIndex-1].LogTerm
 			DPrintf("leader %d 收到 raft %d 日志不一致，减小 nextIndex 重发 %v", rf.me, server, aeArgs)
 			go rf.leaderAERPC(server, aeArgs)
