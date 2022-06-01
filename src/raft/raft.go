@@ -14,7 +14,6 @@ package raft
 //
 
 import (
-	"fmt"
 	"math/rand"
 	"time"
 
@@ -155,8 +154,9 @@ type AppendEntriesArgs struct {
 
 // AppendEntriesReply AppendEntries RPC 回复结构
 type AppendEntriesReply struct {
-	Term    int  // 当前的任期号，⽤于领导⼈去更新⾃⼰
-	Success bool // 跟随者包含了匹配上 prevLogIndex 和 prevLogTerm 的⽇志时为真
+	Term         int  // 当前的任期号，⽤于领导⼈去更新⾃⼰
+	Success      bool // 跟随者包含了匹配上 prevLogIndex 和 prevLogTerm 的⽇志时为真
+	LastLogIndex int  // 最后复制成功日志的索引
 }
 
 // RequestVoteArgs RequestVote RPC 参数结构.
@@ -274,27 +274,53 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if len(args.Entries) != 0 {
 			DPrintf("raft %d 开始日志处理", rf.me)
 			// FIXME 这里的前提是 follower 的日志序号不会比 Leader 已知的小
+
 			if len(rf.logs) == 0 || args.PrevLogIndex == 0 {
-				// 直接追加
-				rf.logs = make([]Log, 0)
-				rf.logs = append(rf.logs, args.Entries...)
-				rf.nextIndex[rf.me] = len(args.Entries) + 1
-				rf.matchIndex[rf.me] = len(args.Entries)
-				DPrintf("raft %d 追加第一份日志成功，logs = %v", rf.me, rf.logs)
-			} else {
-				if rf.matchIndex[rf.me] < args.PrevLogIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm {
-					fmt.Println(rf.matchIndex[rf.me], args.PrevLogIndex, args.PrevLogTerm, rf.logs)
-					reply.Success = false // 上次日志任期不匹配，返回 false
-					DPrintf("raft %d 发现上次日志任期不匹配，logs=%v，返回 false", rf.me, rf.logs)
-				} else {
-					// 删除后追加
-					rf.logs = rf.logs[:args.PrevLogIndex]
+				if args.PrevLogIndex == 0 && len(rf.logs) == 0 {
+					// 直接追加
+					rf.logs = make([]Log, 0)
 					rf.logs = append(rf.logs, args.Entries...)
 					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
 					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
-					DPrintf("raft %d 追加日志成功,nextIndex = %d matchIndex = %d", rf.me, rf.nextIndex[rf.me], rf.matchIndex[rf.me])
+					DPrintf("raft %d 追加第一份日志成功，logs = %v", rf.me, rf.logs)
+				} else {
+					for i, entry := range args.Entries {
+						if len(rf.logs) <= args.PrevLogIndex+i {
+							rf.logs = append(rf.logs, args.Entries[i:]...)
+							break
+						} else if rf.logs[args.PrevLogIndex+i].LogTerm != entry.LogTerm {
+							rf.logs = rf.logs[:args.PrevLogIndex+i]
+							rf.logs = append(rf.logs, args.Entries[i:]...)
+							break
+						}
+					}
+					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
+					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
+				}
+			} else {
+				if rf.matchIndex[rf.me] < args.PrevLogIndex || args.PrevLogTerm != rf.logs[args.PrevLogIndex-1].LogTerm {
+					//fmt.Println(rf.matchIndex[rf.me], args.PrevLogIndex, args.PrevLogTerm, rf.logs)
+					reply.Success = false // 上次日志任期不匹配，返回 false
+					DPrintf("raft %d 发现上次日志任期不匹配，logs=%v，返回 false", rf.me, rf.logs)
+				} else {
+					// 如果现有的⽇志条⽬和新的产⽣冲突（索引相同任期号不同），删除现有的和之后所有的条目
+					for i, entry := range args.Entries {
+						if len(rf.logs) <= args.PrevLogIndex+i {
+							rf.logs = append(rf.logs, args.Entries[i:]...)
+							break
+						} else if rf.logs[args.PrevLogIndex+i].LogTerm != entry.LogTerm {
+							rf.logs = rf.logs[:args.PrevLogIndex+i]
+							rf.logs = append(rf.logs, args.Entries[i:]...)
+							break
+						}
+					}
+					rf.nextIndex[rf.me] = args.PrevLogIndex + len(args.Entries) + 1
+					rf.matchIndex[rf.me] = args.PrevLogIndex + len(args.Entries)
+					DPrintf("raft %d 追加日志成功,nextIndex = %d matchIndex = %d,logs=%v", rf.me, rf.nextIndex[rf.me], rf.matchIndex[rf.me], rf.logs)
+
 				}
 			}
+			reply.LastLogIndex = rf.matchIndex[rf.me] // 更新回复最后的索引
 		}
 		// 检查 Leader 提交情况
 		if args.LeaderCommit > rf.commitIndex && rf.matchIndex[rf.me] == args.LeaderCommit {
@@ -333,15 +359,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	var isLeader bool
 	var term int
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := len(rf.logs) + 1 // 命令在日志的索引  // FIXME 确定 Index 到底怎么取，这里让索引从1开始
 	state := rf.state
-	rf.mu.Unlock()
 	if state == 2 { // 	只有 Leader 回应 true
 		DPrintf("----------------------------------")
 		DPrintf("客户端请求 leader raft %d command=%v", rf.me, command)
 		isLeader = true
 		// 客户端的请求添加到日志
-		rf.mu.Lock()
 		term = rf.currentTerm
 		log := Log{
 			Command: command,
@@ -358,17 +383,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		prevLogIndex := 0 // 循环里再更新
 		prevLogTerm := 0
 		leaderCommit := rf.commitIndex
-		rf.mu.Unlock()
 		for serverID, _ := range peers {
 			if serverID != leaderId {
-				rf.mu.Lock()
 				// 每个 follower 需要的下一个条目不一样, 用 nextIndex 维护
 				entries := rf.logs[rf.nextIndex[serverID]-1:]
 				if rf.nextIndex[serverID] > 1 {
 					prevLogIndex = rf.nextIndex[serverID] - 1 // FIXME 这里让索引从 1 开始
 					prevLogTerm = rf.logs[prevLogIndex-1].LogTerm
 				}
-				rf.mu.Unlock()
 				aeArgs := &AppendEntriesArgs{
 					Term:         term,
 					LeaderId:     leaderId,
@@ -519,7 +541,7 @@ func (rf *Raft) leaderDo() {
 		rf.matchIndex[i] = len(rf.logs)
 	}
 	rf.mu.Unlock()
-	// 上任后先提交一个空命令
+	//上任后先提交一个空命令
 	//rf.Start(nil)
 
 	for rf.killed() == false { // 成为 leader 后一直在这个循环
@@ -601,9 +623,11 @@ func (rf *Raft) leaderAERPC(server int, aeArgs *AppendEntriesArgs) {
 		if len(aeArgs.Entries) != 0 {
 			// TODO 追加成功
 			DPrintf("leader %d 收到来自 raft %d 的回复 %v，追加成功", rf.me, server, aeReply)
-			rf.nextIndex[server] = rf.nextIndex[server] + len(aeArgs.Entries)
-			rf.matchIndex[server] = rf.matchIndex[server] + len(aeArgs.Entries)
-			DPrintf("leader %d 更新：rf.nextIndex[%d] = %d rf.matchIndex[%d] = %d", rf.me, server, rf.nextIndex[server], server, rf.matchIndex[server])
+			if aeReply.LastLogIndex > rf.matchIndex[server] {
+				rf.nextIndex[server] = aeReply.LastLogIndex + 1
+				rf.matchIndex[server] = aeReply.LastLogIndex
+			}
+			DPrintf("leader %d 更新：rf.nextIndex[%d] = %d rf.matchIndex[%d] = %d， matchIndex=%v", rf.me, server, rf.nextIndex[server], server, rf.matchIndex[server], rf.matchIndex)
 			go rf.commitEntries() // 检查是否可以提交
 		}
 	}
